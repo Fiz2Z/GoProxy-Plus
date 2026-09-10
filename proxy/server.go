@@ -19,19 +19,24 @@ import (
 )
 
 type Server struct {
-	storage *storage.Storage
-	cfg     *config.Config
-	mode    string // "random" 或 "lowest-latency"
-	port    string
+	storage  *storage.Storage
+	cfg      *config.Config
+	mode     string // "random" 或 "lowest-latency"
+	port     string
+	affinity *AffinityManager
 }
 
-func New(s *storage.Storage, cfg *config.Config, mode string, port string) *Server {
-	return &Server{
+func New(s *storage.Storage, cfg *config.Config, mode string, port string, affinity ...*AffinityManager) *Server {
+	server := &Server{
 		storage: s,
 		cfg:     cfg,
 		mode:    mode,
 		port:    port,
 	}
+	if len(affinity) > 0 {
+		server.affinity = affinity[0]
+	}
+	return server
 }
 
 func (s *Server) Start() error {
@@ -48,60 +53,75 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	session := ""
 	// 认证检查（如果启用）
 	if s.cfg.ProxyAuthEnabled {
-		if !s.checkAuth(r) {
+		var ok bool
+		session, ok = s.checkAuth(r)
+		if !ok {
 			w.Header().Set("Proxy-Authenticate", `Basic realm="GoProxy"`)
 			http.Error(w, "Proxy Authentication Required", http.StatusProxyAuthRequired)
 			return
 		}
-	}
-	
-	if r.Method == http.MethodConnect {
-		s.handleTunnel(w, r)
 	} else {
-		s.handleHTTP(w, r)
+		session = normalizeAffinityValue(r.Header.Get("X-GoProxy-Session"), "")
+	}
+
+	if r.Method == http.MethodConnect {
+		s.handleTunnel(w, r, session)
+	} else {
+		s.handleHTTP(w, r, session)
 	}
 }
 
 // checkAuth 验证代理 Basic Auth
-func (s *Server) checkAuth(r *http.Request) bool {
+func (s *Server) checkAuth(r *http.Request) (string, bool) {
 	auth := r.Header.Get("Proxy-Authorization")
 	if auth == "" {
-		return false
+		return "", false
 	}
-	
+
 	// 解析 Basic Auth
 	const prefix = "Basic "
 	if !strings.HasPrefix(auth, prefix) {
-		return false
+		return "", false
 	}
-	
+
 	decoded, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
 	if err != nil {
-		return false
+		return "", false
 	}
-	
+
 	credentials := strings.SplitN(string(decoded), ":", 2)
 	if len(credentials) != 2 {
-		return false
+		return "", false
 	}
-	
+
 	username := credentials[0]
 	password := credentials[1]
-	
+
 	// 验证用户名和密码
-	usernameMatch := subtle.ConstantTimeCompare([]byte(username), []byte(s.cfg.ProxyAuthUsername)) == 1
+	session, usernameOK := splitSessionUsername(username, s.cfg.ProxyAuthUsername)
 	passwordHash := fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
 	passwordMatch := subtle.ConstantTimeCompare([]byte(passwordHash), []byte(s.cfg.ProxyAuthPasswordHash)) == 1
-	
-	return usernameMatch && passwordMatch
+
+	return session, usernameOK && passwordMatch
 }
 
 // selectProxy 根据使用模式和选择策略获取代理
-func (s *Server) selectProxy(tried []string, lowestLatency bool) (*storage.Proxy, error) {
+func (s *Server) selectProxy(tried []string, lowestLatency bool, session, target string) (*storage.Proxy, error) {
 	cfg := config.Get()
 	sourceFilter := sourceFilterFromMode(cfg.CustomProxyMode)
+	selector := func(excludes []string) (*storage.Proxy, error) {
+		return s.selectProxyFromStorage(excludes, lowestLatency, sourceFilter, cfg)
+	}
+	if s.affinity != nil && session != "" {
+		return s.affinity.Select(session, target, s.port, tried, selector)
+	}
+	return selector(tried)
+}
+
+func (s *Server) selectProxyFromStorage(tried []string, lowestLatency bool, sourceFilter string, cfg *config.Config) (*storage.Proxy, error) {
 
 	// 混用 + 优先模式：先尝试优先源，无可用则 fallback 全部
 	if cfg.CustomProxyMode == "mixed" && (cfg.CustomPriority || cfg.CustomFreePriority) {
@@ -154,10 +174,10 @@ func sourceFilterFromMode(mode string) string {
 }
 
 // handleHTTP 处理普通 HTTP 请求（带自动重试）
-func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request, session string) {
 	var tried []string
 	for attempt := 0; attempt <= s.cfg.MaxRetry; attempt++ {
-		p, err := s.selectProxy(tried, s.mode == "lowest-latency")
+		p, err := s.selectProxy(tried, s.mode == "lowest-latency", session, applicationTarget(r.Host))
 		if err != nil {
 			http.Error(w, "no available proxy", http.StatusServiceUnavailable)
 			return
@@ -167,6 +187,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 		client, err := s.buildClient(p)
 		if err != nil {
+			if s.affinity != nil {
+				s.affinity.Feedback(session, false, err.Error())
+			}
 			removeOrDisableProxy(s.storage, p)
 			continue
 		}
@@ -178,11 +201,16 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Header = r.Header.Clone()
 		req.Header.Del("Proxy-Connection")
+		req.Header.Del("Proxy-Authorization")
+		req.Header.Del("X-GoProxy-Session")
 
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Printf("[proxy] %s via %s failed, removing", r.RequestURI, p.Address)
 			s.storage.RecordProxyUse(p.Address, false)
+			if s.affinity != nil {
+				s.affinity.Feedback(session, false, err.Error())
+			}
 			removeOrDisableProxy(s.storage, p)
 			continue
 		}
@@ -197,6 +225,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 		s.storage.RecordProxyUse(p.Address, true)
+		if s.affinity != nil && shouldPenalizeApplicationResponse(resp.StatusCode) {
+			s.affinity.Feedback(session, false, fmt.Sprintf("HTTP %d", resp.StatusCode))
+		}
 		if resp.StatusCode == 429 {
 			log.Printf("[proxy] ⚠️  429 %s via %s (protocol=%s)", r.RequestURI, p.Address, p.Protocol)
 		} else {
@@ -208,11 +239,18 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "all proxies failed", http.StatusBadGateway)
 }
 
+func shouldPenalizeApplicationResponse(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout ||
+		statusCode == http.StatusPreconditionFailed ||
+		statusCode == http.StatusTooManyRequests ||
+		statusCode >= http.StatusInternalServerError
+}
+
 // handleTunnel 处理 HTTPS CONNECT 隧道（带自动重试）
-func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request, session string) {
 	var tried []string
 	for attempt := 0; attempt <= s.cfg.MaxRetry; attempt++ {
-		p, err := s.selectProxy(tried, s.mode == "lowest-latency")
+		p, err := s.selectProxy(tried, s.mode == "lowest-latency", session, applicationTarget(r.Host))
 		if err != nil {
 			http.Error(w, "no available proxy", http.StatusServiceUnavailable)
 			return
@@ -224,6 +262,9 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[tunnel] dial %s via %s failed, removing", r.Host, p.Address)
 			s.storage.RecordProxyUse(p.Address, false)
+			if s.affinity != nil {
+				s.affinity.Feedback(session, false, err.Error())
+			}
 			removeOrDisableProxy(s.storage, p)
 			continue
 		}

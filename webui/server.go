@@ -2,12 +2,14 @@ package webui
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"goproxy/custom"
 	"goproxy/logger"
 	"goproxy/pool"
+	goproxy "goproxy/proxy"
 	"goproxy/storage"
 	"goproxy/validator"
 )
@@ -47,39 +50,43 @@ func validSession(r *http.Request) bool {
 type FetchTrigger func()
 
 type Server struct {
-	storage       *storage.Storage
-	cfg           *config.Config
-	poolMgr       *pool.Manager
-	customMgr     *custom.Manager
-	fetchTrigger  FetchTrigger
-	configChanged chan<- struct{}
+	storage          *storage.Storage
+	cfg              *config.Config
+	poolMgr          *pool.Manager
+	customMgr        *custom.Manager
+	fetchTrigger     FetchTrigger
+	configChanged    chan<- struct{}
+	applicationProxy *goproxy.AffinityManager
+	applicationToken string
 }
 
-func New(s *storage.Storage, cfg *config.Config, pm *pool.Manager, cm *custom.Manager, ft FetchTrigger, cc chan<- struct{}) *Server {
+func New(s *storage.Storage, cfg *config.Config, pm *pool.Manager, cm *custom.Manager, ap *goproxy.AffinityManager, ft FetchTrigger, cc chan<- struct{}) *Server {
 	return &Server{
-		storage:       s,
-		cfg:           cfg,
-		poolMgr:       pm,
-		customMgr:     cm,
-		fetchTrigger:  ft,
-		configChanged: cc,
+		storage:          s,
+		cfg:              cfg,
+		poolMgr:          pm,
+		customMgr:        cm,
+		fetchTrigger:     ft,
+		configChanged:    cc,
+		applicationProxy: ap,
+		applicationToken: strings.TrimSpace(os.Getenv("APP_FEEDBACK_TOKEN")),
 	}
 }
 
 func (s *Server) Start() {
 	mux := http.NewServeMux()
-	
+
 	// 添加日志中间件
 	loggedMux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[webui] %s %s | Host: %s | RemoteAddr: %s", 
+		log.Printf("[webui] %s %s | Host: %s | RemoteAddr: %s",
 			r.Method, r.URL.Path, r.Host, r.RemoteAddr)
 		mux.ServeHTTP(w, r)
 	})
-	
+
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
-	
+
 	// 只读 API（访客可访问）
 	mux.HandleFunc("/api/stats", s.readOnlyMiddleware(s.apiStats))
 	mux.HandleFunc("/api/proxies", s.readOnlyMiddleware(s.apiProxies))
@@ -88,7 +95,10 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/pool/quality", s.readOnlyMiddleware(s.apiQualityDistribution))
 	mux.HandleFunc("/api/config", s.readOnlyMiddleware(s.apiConfig))
 	mux.HandleFunc("/api/auth/check", s.apiAuthCheck) // 检查登录状态
-	
+	mux.HandleFunc("/api/application/status", s.readOnlyMiddleware(s.apiApplicationStatus))
+	mux.HandleFunc("/api/application/feedback", s.applicationMiddleware(s.apiApplicationFeedback))
+	mux.HandleFunc("/api/application/release", s.applicationMiddleware(s.apiApplicationRelease))
+
 	// 管理员 API（需要登录）
 	mux.HandleFunc("/api/proxy/delete", s.authMiddleware(s.apiDeleteProxy))
 	mux.HandleFunc("/api/proxy/refresh", s.authMiddleware(s.apiRefreshProxy))
@@ -112,6 +122,77 @@ func (s *Server) Start() {
 			log.Fatalf("webui: %v", err)
 		}
 	}()
+}
+
+func (s *Server) applicationMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.applicationToken == "" {
+			jsonError(w, "application feedback API is disabled", http.StatusServiceUnavailable)
+			return
+		}
+		provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		expectedHash := sha256.Sum256([]byte(s.applicationToken))
+		providedHash := sha256.Sum256([]byte(provided))
+		if subtle.ConstantTimeCompare(expectedHash[:], providedHash[:]) != 1 {
+			jsonError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) apiApplicationStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.applicationProxy == nil {
+		jsonOK(w, map[string]interface{}{"enabled": false})
+		return
+	}
+	jsonOK(w, s.applicationProxy.Status())
+}
+
+func (s *Server) apiApplicationFeedback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.applicationProxy == nil {
+		jsonError(w, "application proxy manager is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		Success bool   `json:"success"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || strings.TrimSpace(req.Session) == "" {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	matched := s.applicationProxy.Feedback(req.Session, req.Success, req.Reason)
+	jsonOK(w, map[string]interface{}{"status": "recorded", "matched": matched})
+}
+
+func (s *Server) apiApplicationRelease(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.applicationProxy == nil {
+		jsonError(w, "application proxy manager is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || strings.TrimSpace(req.Session) == "" {
+		jsonError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	released := s.applicationProxy.Release(req.Session)
+	jsonOK(w, map[string]interface{}{"status": "released", "leases": released})
 }
 
 // authMiddleware 管理员权限中间件（必须登录）
@@ -182,7 +263,7 @@ func (s *Server) apiAuthCheck(w http.ResponseWriter, r *http.Request) {
 	isAdmin := validSession(r)
 	jsonOK(w, map[string]interface{}{
 		"isAdmin": isAdmin,
-		"mode":    func() string {
+		"mode": func() string {
 			if isAdmin {
 				return "admin"
 			}
@@ -256,7 +337,7 @@ func (s *Server) apiRefreshProxy(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to get proxy", http.StatusInternalServerError)
 		return
 	}
-	
+
 	var targetProxy *storage.Proxy
 	for i := range proxies {
 		if proxies[i].Address == req.Address {
@@ -264,7 +345,7 @@ func (s *Server) apiRefreshProxy(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	
+
 	if targetProxy == nil {
 		jsonError(w, "proxy not found", http.StatusNotFound)
 		return
@@ -274,10 +355,10 @@ func (s *Server) apiRefreshProxy(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		cfg := config.Get()
 		v := validator.New(1, cfg.ValidateTimeout, cfg.ValidateURL)
-		
+
 		log.Printf("[webui] refreshing proxy: %s", req.Address)
 		valid, latency, exitIP, exitLocation := v.ValidateOne(*targetProxy)
-		
+
 		if valid {
 			latencyMs := int(latency.Milliseconds())
 			s.storage.UpdateExitInfo(req.Address, exitIP, exitLocation, latencyMs)
@@ -354,35 +435,35 @@ func (s *Server) apiLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Get()
 	httpSlots, socks5Slots := cfg.CalculateSlots()
-	
+
 	jsonOK(w, map[string]interface{}{
 		// 池子配置
-		"pool_max_size":        cfg.PoolMaxSize,
-		"pool_http_ratio":      cfg.PoolHTTPRatio,
+		"pool_max_size":         cfg.PoolMaxSize,
+		"pool_http_ratio":       cfg.PoolHTTPRatio,
 		"pool_min_per_protocol": cfg.PoolMinPerProtocol,
-		"pool_http_slots":      httpSlots,
-		"pool_socks5_slots":    socks5Slots,
+		"pool_http_slots":       httpSlots,
+		"pool_socks5_slots":     socks5Slots,
 
 		// 延迟配置
-		"max_latency_ms":         cfg.MaxLatencyMs,
-		"max_latency_emergency":  cfg.MaxLatencyEmergency,
-		"max_latency_healthy":    cfg.MaxLatencyHealthy,
+		"max_latency_ms":        cfg.MaxLatencyMs,
+		"max_latency_emergency": cfg.MaxLatencyEmergency,
+		"max_latency_healthy":   cfg.MaxLatencyHealthy,
 
 		// 验证配置
-		"validate_concurrency":   cfg.ValidateConcurrency,
-		"validate_timeout":       cfg.ValidateTimeout,
+		"validate_concurrency": cfg.ValidateConcurrency,
+		"validate_timeout":     cfg.ValidateTimeout,
 
 		// 健康检查配置
-		"health_check_interval":  cfg.HealthCheckInterval,
+		"health_check_interval":   cfg.HealthCheckInterval,
 		"health_check_batch_size": cfg.HealthCheckBatchSize,
 
 		// 优化配置
-		"optimize_interval":      cfg.OptimizeInterval,
-		"replace_threshold":      cfg.ReplaceThreshold,
+		"optimize_interval": cfg.OptimizeInterval,
+		"replace_threshold": cfg.ReplaceThreshold,
 
 		// 地理过滤配置
-		"blocked_countries":      cfg.BlockedCountries,
-		"allowed_countries":      cfg.AllowedCountries,
+		"blocked_countries": cfg.BlockedCountries,
+		"allowed_countries": cfg.AllowedCountries,
 
 		// 自定义订阅代理配置
 		"custom_proxy_mode":       cfg.CustomProxyMode,

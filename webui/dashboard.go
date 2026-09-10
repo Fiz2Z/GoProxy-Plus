@@ -5,10 +5,7 @@ const dashboardHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GoProxy — 智能代理池</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<title>GoProxy Plus — 智能代理池</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -198,6 +195,57 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
 /* Toast 提示 */
 .toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--fg);color:#000;padding:12px 24px;font-size:11px;font-weight:600;font-family:var(--mono);opacity:0;transition:all 0.3s;z-index:1000;pointer-events:none;box-shadow:0 0 20px var(--fg);text-transform:uppercase;letter-spacing:0.05em}
 .toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+
+/* GoProxy Plus — calm operational interface */
+:root{
+  --bg:#f3f5f8;--bg-elevated:rgba(255,255,255,.92);--bg-card:#fff;
+  --fg:#172033;--fg-dim:#5d687a;--fg-text:#172033;
+  --border:#e1e6ee;--border-heavy:#cbd4e1;
+  --gray-1:#f8fafc;--gray-2:#f1f4f8;--gray-3:#e8edf4;--gray-4:#a1acbb;--gray-5:#758196;--gray-6:#4b5870;
+  --green:#16855b;--yellow:#a5680b;--orange:#c46d24;--red:#c14354;--blue:#3266d5;
+  --mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --shadow:0 12px 32px rgba(29,43,70,.07);--radius:16px;--radius-sm:10px;
+}
+html{background:var(--bg)}
+body{min-height:100vh;background:linear-gradient(180deg,#f8fafc 0,#f3f5f8 280px);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.5;position:relative}
+body::before,body::after{display:none}
+button,select,input{font:inherit}
+button,.tab,.filter-select,a{-webkit-tap-highlight-color:transparent}
+button:active,.tab:active{transform:scale(.975)}
+.layout{max-width:1580px;margin:0 auto;padding:18px 24px 36px}
+.content-grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}
+.main-content{min-width:0}.sidebar{position:sticky;top:18px}
+.proxy-header{position:sticky;top:12px;z-index:100;background:rgba(255,255,255,.82);padding:14px 16px;border:1px solid rgba(215,222,233,.88);border-radius:var(--radius);display:flex;align-items:center;justify-content:space-between;gap:18px;backdrop-filter:blur(18px) saturate(160%);box-shadow:var(--shadow);margin-bottom:14px}
+.proxy-logo-area{display:flex;align-items:center;gap:10px;min-width:0}.proxy-logo{font-size:20px;font-weight:750;letter-spacing:-.025em;font-family:var(--sans);text-transform:none;color:var(--fg);text-shadow:none;animation:none}.proxy-logo::before{content:"";display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);margin-right:10px;box-shadow:0 0 0 4px rgba(22,133,91,.1)}
+.user-badge{font-size:11px;color:var(--gray-6);font-family:var(--sans);letter-spacing:0;background:var(--gray-2);border:1px solid var(--border);padding:3px 8px;border-radius:999px;opacity:1}
+.header-actions{display:flex;gap:7px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.tab,.filter-select{min-height:36px;padding:8px 12px;border:1px solid var(--border);border-radius:9px;background:#fff;color:var(--fg-dim);font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;box-shadow:0 1px 2px rgba(25,35,55,.03);transition:background .16s ease,border-color .16s ease,color .16s ease,transform .1s ease}
+.tab:hover,.filter-select:hover{background:var(--gray-2);border-color:var(--border-heavy);color:var(--fg);box-shadow:none}
+.filter-select{appearance:auto;background-image:none;padding-right:10px;outline:none}.filter-select:focus{border-color:rgba(50,102,213,.55);box-shadow:0 0 0 3px rgba(50,102,213,.12)}.filter-select option{background:#fff;color:var(--fg)}
+#proxy-table-wrap{overflow:auto;background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;font-family:var(--sans);border:0;background:transparent}
+thead{position:sticky;top:0;z-index:50;background:rgba(248,250,252,.96);border:0;box-shadow:0 1px 0 var(--border);backdrop-filter:blur(12px)}
+th{padding:12px 14px;text-align:left;font-size:11px;letter-spacing:.02em;color:var(--gray-6);font-weight:650;text-transform:none;white-space:nowrap}
+td{padding:13px 14px;border-bottom:1px solid #edf0f5;color:var(--fg-dim)}tr:last-child td{border-bottom:none}tr:hover{background:#f8fafc;box-shadow:none}
+.cell-mono{font-family:var(--mono);font-size:11px}.cell-grade{font-weight:750;font-size:13px}.cell-clickable{cursor:pointer}.cell-clickable:hover{background:#eef3ff!important;color:var(--blue)!important;box-shadow:none!important}.cell-clickable:active{background:#e4ebfb!important}
+.grade-s{color:var(--green);text-shadow:none}.grade-a{color:#9d6c13;text-shadow:none}.grade-b{color:var(--orange);text-shadow:none}.grade-c{color:var(--red);text-shadow:none}
+.badge{display:inline-flex;align-items:center;padding:3px 7px;font-size:10px;font-weight:650;letter-spacing:0;border:1px solid;border-radius:999px;font-family:var(--sans);text-transform:none}.badge-http{border-color:#c9d7f3;color:#315caa;background:#f2f6ff}.badge-socks5{border-color:#cde4da;color:#18704f;background:#f0faf6;box-shadow:none}
+.latency{font-weight:650}.latency-excellent{color:var(--green)}.latency-good{color:#437460}.latency-fair{color:var(--orange)}.latency-poor{color:var(--red)}
+.control-panel,.sidebar .section,.quality-bar{background:rgba(255,255,255,.94);border:1px solid var(--border);border-radius:var(--radius);padding:15px;margin-bottom:12px;box-shadow:0 7px 22px rgba(29,43,70,.05)}
+.control-header,.sidebar .section-header{display:flex;align-items:center;justify-content:space-between;margin:0 0 12px;padding:0;border:0}.control-title,.sidebar .section-title,.quality-bar-title{font-size:12px;font-weight:700;letter-spacing:0;text-transform:none;font-family:var(--sans);color:var(--fg);text-shadow:none}
+.control-title::before{content:"管理";font-size:0}.control-ops{display:flex;gap:8px}.ctrl-btn-primary,.ctrl-btn-secondary{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:9px;background:#fff;color:var(--fg-dim);font-family:var(--sans);font-size:11px;font-weight:650;text-transform:none;letter-spacing:0;cursor:pointer;transition:background .16s ease,border-color .16s ease,transform .1s ease}.ctrl-btn-primary{background:var(--blue);border-color:var(--blue);color:#fff}.ctrl-btn-primary:hover{background:#2859bf;color:#fff;box-shadow:none;text-shadow:none}.ctrl-btn-secondary:hover{background:var(--gray-2);border-color:var(--border-heavy);color:var(--fg);box-shadow:none}
+.panel-label{font-size:11px;color:var(--gray-6);letter-spacing:.02em;margin:16px 2px 7px;font-weight:650}.health-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;background:transparent;border:0;margin-bottom:12px;box-shadow:none}.health-card{background:#fff;padding:12px;border:1px solid var(--border);border-radius:12px;position:relative}.health-label{font-size:10px;letter-spacing:.02em;text-transform:none;color:var(--gray-5);margin-bottom:6px;font-weight:650;font-family:var(--sans)}.health-value{font-size:23px;font-weight:720;font-family:var(--sans);line-height:1.1;letter-spacing:-.025em;color:var(--fg);text-shadow:none;font-variant-numeric:tabular-nums}.health-meta{font-size:10px;color:var(--gray-5);margin-top:5px;font-family:var(--sans)}.health-status{position:absolute;top:13px;right:13px;width:7px;height:7px;border-radius:50%}.health-status.healthy{background:var(--green);box-shadow:0 0 0 3px rgba(22,133,91,.1)}.health-status.warning{background:var(--orange);box-shadow:0 0 0 3px rgba(196,109,36,.1)}.health-status.critical,.health-status.emergency{background:var(--red);box-shadow:0 0 0 3px rgba(193,67,84,.1);animation:none}
+.quality-bar{padding:15px}.quality-visual{display:flex;height:9px;border:0;border-radius:999px;overflow:hidden;background:var(--gray-3);box-shadow:none}.quality-segment{font-size:0;box-shadow:none}.quality-s{background:#38a77b}.quality-a{background:#d7a640}.quality-b{background:#df8140}.quality-c{background:#cc5968}.quality-legend{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:11px}.quality-legend-item{font-size:10px;font-family:var(--sans);color:var(--fg-dim)}.quality-legend-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;box-shadow:none}
+.log-box{padding:12px;background:#f7f9fc;border:1px solid var(--border);border-radius:10px;font-family:var(--mono);font-size:10px;color:var(--gray-6);height:290px;overflow:auto;line-height:1.65;box-shadow:none}.log-line{padding:2px 0;opacity:1}.log-line.error{color:var(--red);font-weight:600;text-shadow:none}.log-line.success{color:var(--green);text-shadow:none}
+.btn-danger,.btn-action{border:1px solid var(--border);border-radius:7px;color:var(--fg-dim);padding:5px 8px;font-size:10px;background:#fff;cursor:pointer;transition:background .15s ease,transform .1s ease}.btn-danger{border-color:#efcbd1;color:var(--red)}.btn-danger:hover{background:#fff2f4;color:var(--red);box-shadow:none}.btn-action:hover{background:var(--gray-2);color:var(--fg);box-shadow:none}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(21,30,46,.38);backdrop-filter:blur(8px);z-index:1000;align-items:center;justify-content:center;padding:20px}.modal-overlay.show{display:flex}.modal{background:#fff;border:1px solid rgba(255,255,255,.8);border-radius:20px;padding:26px;width:min(720px,100%);box-shadow:0 26px 80px rgba(20,31,50,.22);max-height:90vh;overflow:auto}.modal-title{font-size:21px;font-weight:750;margin-bottom:22px;letter-spacing:-.02em;text-transform:none;color:var(--fg);text-shadow:none}.form-section{margin-bottom:24px}.form-section-title{font-size:12px;letter-spacing:0;text-transform:none;color:var(--fg);margin-bottom:12px;font-weight:700;padding-bottom:9px;border-bottom:1px solid var(--border)}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-group label{font-size:11px;letter-spacing:0;text-transform:none;color:var(--fg-dim);margin-bottom:6px;font-weight:650}.form-group input,.form-group select,#cfg-custom-mode{padding:10px 11px!important;background:#fff!important;border:1px solid var(--border)!important;border-radius:9px;color:var(--fg)!important;font-family:var(--sans)!important;font-size:12px!important;outline:none}.form-group input:focus,.form-group select:focus{border-color:rgba(50,102,213,.55)!important;box-shadow:0 0 0 3px rgba(50,102,213,.12)!important}.form-help{font-size:10px;color:var(--gray-5);margin-top:5px;font-family:var(--sans)}.modal-actions{display:flex;gap:10px;margin-top:24px;padding-top:18px;border-top:1px solid var(--border)}.modal-actions .btn{flex:1;padding:11px;border:1px solid var(--blue);border-radius:9px;background:var(--blue);color:#fff;font-family:var(--sans);font-size:12px;font-weight:680;text-transform:none;letter-spacing:0;cursor:pointer}.modal-actions .btn:hover{background:#2859bf;box-shadow:none;text-shadow:none}.modal-actions .btn-secondary{border-color:var(--border);background:#fff;color:var(--fg-dim)}.modal-actions .btn-secondary:hover{background:var(--gray-2);color:var(--fg);box-shadow:none}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:#172033;color:#fff;padding:10px 16px;border-radius:10px;font-size:12px;font-weight:600;font-family:var(--sans);opacity:0;transition:transform .22s ease,opacity .22s ease;z-index:2000;pointer-events:none;box-shadow:0 14px 30px rgba(20,30,48,.2);text-transform:none;letter-spacing:0}.empty{padding:64px 20px;text-align:center;color:var(--gray-5);font-size:12px;font-family:var(--sans);text-transform:none;letter-spacing:0}
+@media(max-width:1200px){.content-grid{grid-template-columns:1fr}.sidebar{position:static}.health-grid{grid-template-columns:repeat(4,1fr)}.log-box{height:320px}}
+@media(max-width:720px){.layout{padding:10px}.proxy-header{position:relative;top:0;align-items:flex-start;flex-direction:column;padding:14px}.header-actions{justify-content:flex-start;width:100%}.tab,.filter-select{flex:1}.health-grid{grid-template-columns:repeat(2,1fr)}.form-grid{grid-template-columns:1fr}.modal{padding:20px}.control-ops{flex-direction:column}th,td{padding:11px 12px}.proxy-logo{font-size:19px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition-duration:.01ms!important;animation:none!important}}
+@media(prefers-reduced-transparency:reduce){.proxy-header{background:#fff;backdrop-filter:none}.modal-overlay{backdrop-filter:none}}
+@media(prefers-contrast:more){:root{--border:#aeb8c7;--fg:#0b1120;--fg-dim:#374151}.proxy-header,.control-panel,.sidebar .section,.quality-bar,#proxy-table-wrap{border-width:2px}}
 </style>
 </head>
 <body>
@@ -207,7 +255,7 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
       <div class="proxy-section">
         <div class="proxy-header">
           <div class="proxy-logo-area">
-            <div class="proxy-logo">[ GoProxy ]</div>
+            <div class="proxy-logo">GoProxy Plus</div>
             <span id="user-mode" class="user-badge">guest</span>
           </div>
           <div class="header-actions">
@@ -219,8 +267,8 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
             <select class="filter-select" id="country-filter" onchange="setCountryFilter(this.value)">
               <option value="" id="country-filter-label">出口国家</option>
             </select>
-            <button class="tab" onclick="toggleLang()" id="lang-btn">[ EN ]</button>
-            <a href="https://github.com/isboyjc/ProxyGo" target="_blank" class="tab" title="GitHub">
+            <button class="tab" onclick="toggleLang()" id="lang-btn">EN</button>
+            <a href="https://github.com/Fiz2Z/GoProxy-Plus" target="_blank" class="tab" title="GitHub">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: middle;">
                 <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
               </svg>
@@ -242,7 +290,7 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
     <aside class="sidebar">
       <div class="control-panel admin-only">
         <div class="control-header">
-          <div class="control-title">[ CONTROL_PANEL ]</div>
+          <div class="control-title" data-i18n="control.title">管理操作</div>
         </div>
         <div class="control-ops">
           <button class="ctrl-btn-primary" onclick="triggerFetch()" data-i18n="actions.fetch">抓取代理</button>
@@ -254,7 +302,7 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
       <!-- 订阅管理面板 -->
       <div class="control-panel admin-only" style="margin-bottom:20px">
         <div class="control-header">
-          <div class="control-title">[ SUBSCRIPTIONS ]</div>
+          <div class="control-title" data-i18n="sub.title">订阅管理</div>
         </div>
         <div id="sub-list" style="margin-bottom:8px;font-size:11px;max-height:200px;overflow-y:auto"></div>
         <div class="control-ops">
@@ -265,7 +313,7 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
       </div>
 
       <!-- 免费代理池 -->
-      <div style="font-size:8px;color:var(--fg-dim);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:2px;font-weight:600" data-i18n="health.free_pool">[ FREE_POOL ]</div>
+      <div class="panel-label" data-i18n="health.free_pool">免费代理池</div>
       <div class="health-grid">
         <div class="health-card">
           <div class="health-label" data-i18n="health.status">池子状态</div>
@@ -290,7 +338,7 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
       </div>
 
       <!-- 订阅代理池 -->
-      <div style="font-size:8px;color:var(--yellow);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:2px;font-weight:600" data-i18n="health.sub_pool">[ SUBSCRIPTION_POOL ]</div>
+      <div class="panel-label" data-i18n="health.sub_pool">订阅代理池</div>
       <div class="health-grid" style="grid-template-columns:repeat(3,1fr)">
         <div class="health-card">
           <div class="health-label" data-i18n="health.sub_sources">订阅源</div>
@@ -306,6 +354,25 @@ tr:hover{background:var(--gray-2);box-shadow:inset 0 0 20px rgba(0,255,65,0.05)}
           <div class="health-label" data-i18n="health.disabled">禁用/待恢复</div>
           <div class="health-value" id="stat-custom-disabled">0</div>
           <div class="health-meta" id="custom-disabled-meta" data-i18n="health.awaiting_probe">探测唤醒中</div>
+        </div>
+      </div>
+
+      <div class="panel-label">应用调度</div>
+      <div class="health-grid" style="grid-template-columns:repeat(3,1fr)">
+        <div class="health-card">
+          <div class="health-label">活跃租约</div>
+          <div class="health-value" id="app-active-leases">0</div>
+          <div class="health-meta"><span id="app-lease-ttl">—</span>s 有效期</div>
+        </div>
+        <div class="health-card">
+          <div class="health-label">隔离代理</div>
+          <div class="health-value" id="app-cooling-proxies">0</div>
+          <div class="health-meta">自动恢复</div>
+        </div>
+        <div class="health-card">
+          <div class="health-label">成功率</div>
+          <div class="health-value" id="app-success-rate">—</div>
+          <div class="health-meta"><span id="app-risk-failures">0</span> 次风控</div>
         </div>
       </div>
 
@@ -661,8 +728,9 @@ const i18n = {
     'config.refresh_interval_help': '新订阅的默���刷新周期',
     'config.geo_filter_help': '免费代理删除，订阅代理禁用',
     // 健康面板
-    'health.free_pool': 'FREE_POOL',
-    'health.sub_pool': 'SUBSCRIPTION_POOL',
+    'control.title': '管理操作',
+    'health.free_pool': '免费代理池',
+    'health.sub_pool': '订阅代理池',
     'health.free_proxies': '免费代理',
     'health.sub_sources': '订阅源',
     'health.available': '可用',
@@ -674,7 +742,7 @@ const i18n = {
     'health.not_added': '未添加',
     'health.total_nodes': '共 {0} 节点',
     // 订阅面板
-    'sub.title': 'SUBSCRIPTIONS',
+    'sub.title': '订阅管理',
     'sub.add': '添加订阅',
     'sub.refresh_all': '刷新所有订阅',
     'sub.empty': '暂无订阅',
@@ -814,8 +882,9 @@ const i18n = {
     'config.refresh_interval': 'Default Refresh (min)',
     'config.refresh_interval_help': 'Default refresh cycle for new subscriptions',
     'config.geo_filter_help': 'Free: delete, Subscription: disable',
-    'health.free_pool': 'FREE_POOL',
-    'health.sub_pool': 'SUBSCRIPTION_POOL',
+    'control.title': 'Operations',
+    'health.free_pool': 'Free proxy pool',
+    'health.sub_pool': 'Subscription proxy pool',
     'health.free_proxies': 'Free Proxies',
     'health.sub_sources': 'Sources',
     'health.available': 'Available',
@@ -826,7 +895,7 @@ const i18n = {
     'health.ready': 'Ready',
     'health.not_added': 'None',
     'health.total_nodes': '{0} total nodes',
-    'sub.title': 'SUBSCRIPTIONS',
+    'sub.title': 'Subscriptions',
     'sub.add': 'Add Subscription',
     'sub.refresh_all': 'Refresh All',
     'sub.empty': 'No subscriptions',
@@ -889,7 +958,7 @@ function updateI18n() {
     el.title = t(key);
   });
   document.getElementById('lang-btn').textContent = currentLang === 'zh' ? 'EN' : '中';
-  document.title = currentLang === 'zh' ? 'GoProxy — 智能代理池' : 'GoProxy — Intelligent Pool';
+  document.title = currentLang === 'zh' ? 'GoProxy Plus — 智能代理池' : 'GoProxy Plus — Intelligent Pool';
 
   // 更新筛选下拉框标签
   const protocolLabel = document.getElementById('protocol-filter-label');
@@ -900,7 +969,7 @@ function updateI18n() {
 
 function toggleLang() {
   currentLang = currentLang === 'zh' ? 'en' : 'zh';
-  document.getElementById('lang-btn').textContent = currentLang === 'zh' ? '[ EN ]' : '[ 中文 ]';
+  document.getElementById('lang-btn').textContent = currentLang === 'zh' ? 'EN' : '中文';
   localStorage.setItem('lang', currentLang);
   updateI18n();
   if (allProxies.length > 0) {
@@ -1023,6 +1092,22 @@ async function loadPoolStatus() {
   const stateText = t('health.state.' + status.State.toLowerCase());
   stateEl.textContent = stateText.toUpperCase();
   dotEl.className = 'health-status ' + status.State.toLowerCase();
+}
+
+async function loadApplicationStatus() {
+  try {
+    const status = await api('/api/application/status');
+    if (!status) return;
+    document.getElementById('app-active-leases').textContent = status.active_leases || 0;
+    document.getElementById('app-cooling-proxies').textContent = status.cooling_proxies || 0;
+    document.getElementById('app-lease-ttl').textContent = status.lease_ttl_seconds || '—';
+    document.getElementById('app-risk-failures').textContent = status.risk_failures || 0;
+    document.getElementById('app-success-rate').textContent = status.requests
+      ? Number(status.success_rate || 0).toFixed(1) + '%'
+      : '—';
+  } catch (error) {
+    console.warn('Application proxy status unavailable', error);
+  }
 }
 
 async function loadQualityDistribution() {
@@ -1298,6 +1383,7 @@ async function saveConfig() {
 async function loadAll() {
   await checkAuth(); // 先检查权限
   loadPoolStatus();
+  loadApplicationStatus();
   loadQualityDistribution();
   loadProxies();
   loadLogs();
@@ -1567,6 +1653,7 @@ async function submitContribution() {
 loadAll();
 loadSubscriptions();
 setInterval(loadPoolStatus, 5000);
+setInterval(loadApplicationStatus, 5000);
 setInterval(loadQualityDistribution, 10000);
 setInterval(loadLogs, 5000);
 setInterval(loadSubscriptions, 30000);

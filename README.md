@@ -1,17 +1,14 @@
-# GoProxy
+# GoProxy Plus
 
 > **智能代理池系统** — 基于 Go 的轻量级、自适应代理池服务，支持免费代理自动抓取 + 付费订阅导入
 
-[![Docker Hub](https://img.shields.io/docker/v/isboyjc/goproxy?label=Docker%20Hub&logo=docker)](https://hub.docker.com/r/isboyjc/goproxy)
-[![GitHub Container Registry](https://img.shields.io/badge/GHCR-latest-blue?logo=github)](https://github.com/isboyjc/GoProxy/pkgs/container/goproxy)
+[![GitHub Container Registry](https://img.shields.io/badge/GHCR-GoProxy--Plus-blue?logo=github)](https://github.com/Fiz2Z/GoProxy-Plus/pkgs/container/goproxy-plus)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev/)
 
 GoProxy 从公开代理源自动抓取 HTTP/SOCKS5 代理，同时支持导入 Clash/V2ray 付费订阅，通过出口 IP + 地理位置 + 延迟三重验证后统一入池，对外提供 HTTP 和 SOCKS5 双协议代理服务。
 
-**GitHub**：[github.com/isboyjc/GoProxy](https://github.com/isboyjc/GoProxy)
-
-![](https://cdn.amux.ai/data/1322149f78ab57adb821ce731c11a9e944504649.png)
+**GitHub**：[github.com/Fiz2Z/GoProxy-Plus](https://github.com/Fiz2Z/GoProxy-Plus) · 基于 [isboyjc/GoProxy](https://github.com/isboyjc/GoProxy) 持续维护
 
 ## 核心特性
 
@@ -27,6 +24,8 @@ GoProxy 从公开代理源自动抓取 HTTP/SOCKS5 代理，同时支持导入 C
 - **严格准入** — 出口 IP + 地理位置 + 延迟验证，HTTP 代理额外验证 HTTPS CONNECT 隧道
 - **自动优化** — 按需抓取（Emergency/Refill/Optimize 三模式），定时替换慢代理
 - **故障自愈** — 请求失败自动切换代理重试（最多 3 次），用户无感知
+- **应用感知调度** — 支持短时代理租约、单任务独占出口，以及 412/429 风控代理的递增隔离
+- **反馈闭环** — 可信应用可上报成功、网络错误和目标站风控结果，下一次重试自动避开失败代理
 
 ### 订阅管理
 
@@ -53,6 +52,19 @@ GoProxy 从公开代理源自动抓取 HTTP/SOCKS5 代理，同时支持导入 C
 - 系统设置：5 种代理模式切换、池子参数、地理过滤
 - 双角色权限：访客只读 + 管理员完全控制
 - 中英文切换
+- 应用租约、隔离代理、目标站成功率和风控失败统计
+
+### 应用感知代理
+
+启用代理认证后，客户端可以在认证用户名后附加 `~会话标识`。同一会话会在短时间内复用一个健康出口；应用通过本机反馈 API 上报 412 等结果后，该出口会立即退出租约并进入冷却。
+
+```text
+代理用户名：topic~aid:12345
+代理密码：与 PROXY_AUTH_PASSWORD 一致
+反馈接口：POST /api/application/feedback
+```
+
+生产环境应同时配置 `PROXY_AUTH_ENABLED=true`、`APP_FEEDBACK_TOKEN`，并限制 WebUI 只允许可信内网或本机访问。完整参数见 `.env.example`。
 
 ## 快速开始
 
@@ -188,8 +200,9 @@ docker run -d --name proxygo \
   -e PROXY_AUTH_ENABLED=true \
   -e PROXY_AUTH_USERNAME=myuser \
   -e PROXY_AUTH_PASSWORD=mypass \
+  -e APP_FEEDBACK_TOKEN=replace_with_a_long_random_token \
   -v goproxy-data:/app/data \
-  ghcr.io/isboyjc/goproxy:latest
+  ghcr.io/fiz2z/goproxy-plus:latest
 ```
 
 ### 数据持久化

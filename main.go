@@ -55,9 +55,10 @@ func main() {
 	fetch := fetcher.New(cfg.HTTPSourceURL, cfg.SOCKS5SourceURL, sourceMgr)
 	validate := validator.New(cfg.ValidateConcurrency, cfg.ValidateTimeout, cfg.ValidateURL)
 	poolMgr := pool.NewManager(store, cfg)
+	applicationProxy := proxy.NewAffinityManager()
 	healthChecker := checker.NewHealthChecker(store, validate, cfg, poolMgr)
 	opt := optimizer.NewOptimizer(store, fetch, validate, poolMgr, cfg)
-	
+
 	// 清理无效代理（免费代理删除，订阅代理禁用）
 	totalDeleted := 0
 	if len(cfg.AllowedCountries) > 0 {
@@ -81,14 +82,14 @@ func main() {
 		log.Printf("[main] 🧹 已清理 %d 个无出口信息的代理", deleted)
 		totalDeleted += int(deleted)
 	}
-	
+
 	// 创建 HTTP 代理服务器：随机轮换 + 最低延迟
-	randomServer := proxy.New(store, cfg, "random", cfg.ProxyPort)
-	stableServer := proxy.New(store, cfg, "lowest-latency", cfg.StableProxyPort)
-	
+	randomServer := proxy.New(store, cfg, "random", cfg.ProxyPort, applicationProxy)
+	stableServer := proxy.New(store, cfg, "lowest-latency", cfg.StableProxyPort, applicationProxy)
+
 	// 创建 SOCKS5 代理服务器：随机轮换 + 最低延迟
-	socks5RandomServer := proxy.NewSOCKS5(store, cfg, "random", cfg.SOCKS5Port)
-	socks5StableServer := proxy.NewSOCKS5(store, cfg, "lowest-latency", cfg.StableSOCKS5Port)
+	socks5RandomServer := proxy.NewSOCKS5(store, cfg, "random", cfg.SOCKS5Port, applicationProxy)
+	socks5StableServer := proxy.NewSOCKS5(store, cfg, "lowest-latency", cfg.StableSOCKS5Port, applicationProxy)
 
 	// 初始化订阅管理器
 	customMgr := custom.NewManager(store, validate, cfg)
@@ -97,7 +98,7 @@ func main() {
 	configChanged := make(chan struct{}, 1)
 
 	// 启动 WebUI（传递池子管理器和订阅管理器）
-	ui := webui.New(store, cfg, poolMgr, customMgr, func() {
+	ui := webui.New(store, cfg, poolMgr, customMgr, applicationProxy, func() {
 		go smartFetchAndFill(fetch, validate, store, poolMgr)
 	}, configChanged)
 	ui.Start()
