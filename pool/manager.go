@@ -167,11 +167,15 @@ func (m *Manager) TryAddProxy(p storage.Proxy) (bool, string) {
 
 	// 情况1：该协议槽位未满，直接加入
 	if currentCount < maxSlots {
-		if err := m.storage.AddProxy(p.Address, p.Protocol); err != nil {
+		inserted, err := m.storage.AddProxyIfNew(p.Address, p.Protocol)
+		if err != nil {
 			return false, "db_error"
 		}
 		// 更新完整信息
 		m.storage.UpdateExitInfo(p.Address, p.ExitIP, p.ExitLocation, p.Latency)
+		if !inserted {
+			return false, "duplicate"
+		}
 		log.Printf("[pool] ✅ 直接入池: %s (%s %d/%d) %dms %s %s",
 			p.Address, p.Protocol, currentCount+1, maxSlots, p.Latency, p.ExitIP, p.ExitLocation)
 		return true, "added"
@@ -180,10 +184,14 @@ func (m *Manager) TryAddProxy(p storage.Proxy) (bool, string) {
 	// 情况2：槽位满，但允许10%浮动
 	allowedFloat := int(float64(maxSlots) * 0.1)
 	if total < m.cfg.PoolMaxSize && currentCount < maxSlots+allowedFloat {
-		if err := m.storage.AddProxy(p.Address, p.Protocol); err != nil {
+		inserted, err := m.storage.AddProxyIfNew(p.Address, p.Protocol)
+		if err != nil {
 			return false, "db_error"
 		}
 		m.storage.UpdateExitInfo(p.Address, p.ExitIP, p.ExitLocation, p.Latency)
+		if !inserted {
+			return false, "duplicate"
+		}
 		log.Printf("[pool] ✅ 浮动入池: %s (%s %d/%d+%d) %dms",
 			p.Address, p.Protocol, currentCount+1, maxSlots, allowedFloat, p.Latency)
 		return true, "added_float"

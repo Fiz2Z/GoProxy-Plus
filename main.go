@@ -275,7 +275,8 @@ func smartFetchAndFill(fetch *fetcher.Fetcher, validate *validator.Validator, st
 			Latency:      latencyMs,
 		}
 
-		if added, reason := poolMgr.TryAddProxy(proxyToAdd); added {
+		added, reason := poolMgr.TryAddProxy(proxyToAdd)
+		if added {
 			addedCount.Add(1)
 			if result.Proxy.Origin != "" {
 				statsMu.Lock()
@@ -292,6 +293,11 @@ func smartFetchAndFill(fetch *fetcher.Fetcher, validate *validator.Validator, st
 					break
 				}
 			}
+		}
+		if !added && reason != "" {
+			statsMu.Lock()
+			failureStages["pool_"+reason]++
+			statsMu.Unlock()
 		}
 	}
 

@@ -18,6 +18,23 @@ func TestProxySelectionWeightPrefersHighGrades(t *testing.T) {
 	}
 }
 
+func TestAddProxyIfNewDistinguishesDuplicates(t *testing.T) {
+	store, err := New(filepath.Join(t.TempDir(), "proxy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.db.Close()
+
+	inserted, err := store.AddProxyIfNew("9.9.9.9:8080", "http")
+	if err != nil || !inserted {
+		t.Fatalf("first insert: inserted=%v err=%v", inserted, err)
+	}
+	inserted, err = store.AddProxyIfNew("9.9.9.9:8080", "http")
+	if err != nil || inserted {
+		t.Fatalf("duplicate insert: inserted=%v err=%v", inserted, err)
+	}
+}
+
 func TestFailureLifecycleDisablesThenExpires(t *testing.T) {
 	store, err := New(filepath.Join(t.TempDir(), "proxy.db"))
 	if err != nil {

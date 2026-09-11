@@ -289,21 +289,26 @@ func (s *Storage) initSchema() error {
 
 // AddProxy 新增免费代理，已存在则忽略
 func (s *Storage) AddProxy(address, protocol string) error {
+	_, err := s.AddProxyIfNew(address, protocol)
+	return err
+}
+
+// AddProxyIfNew 新增免费代理，并明确返回本次是否真的插入。
+func (s *Storage) AddProxyIfNew(address, protocol string) (bool, error) {
 	result, err := s.db.Exec(
 		`INSERT OR IGNORE INTO proxies (address, protocol, source) VALUES (?, ?, 'free')`,
 		address, protocol,
 	)
 	if err != nil {
 		log.Printf("[storage] AddProxy %s error: %v", address, err)
-		return err
+		return false, err
 	}
 
-	// 检查是否真的插入了
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		log.Printf("[storage] AddProxy %s ignored (already exists or constraint)", address)
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
 	}
-	return nil
+	return affected > 0, nil
 }
 
 // AddProxies 批量新增
