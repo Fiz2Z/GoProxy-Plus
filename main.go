@@ -78,9 +78,9 @@ func main() {
 			log.Printf("[main] 🔒 已禁用 %d 个屏蔽国家订阅代理", disabled)
 		}
 	}
-	if deleted, err := store.DeleteWithoutExitInfo(); err == nil && deleted > 0 {
-		log.Printf("[main] 🧹 已清理 %d 个无出口信息的代理", deleted)
-		totalDeleted += int(deleted)
+	if quarantined, err := store.QuarantineWithoutExitInfo(); err == nil && quarantined > 0 {
+		log.Printf("[main] ⏸️ 已隔离 %d 个无出口信息的代理，等待健康检查复测", quarantined)
+		totalDeleted += int(quarantined)
 	}
 
 	// 创建 HTTP 代理服务器：随机轮换 + 最低延迟

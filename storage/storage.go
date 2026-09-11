@@ -860,13 +860,24 @@ func (s *Storage) DeleteNotAllowedCountries(allowedCodes []string) (int64, error
 	return res.RowsAffected()
 }
 
-// DeleteWithoutExitInfo 删除没有出口信息的代理（仅免费代理）
-func (s *Storage) DeleteWithoutExitInfo() (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM proxies WHERE source = 'free' AND (exit_ip = '' OR exit_location = '')`)
+// QuarantineWithoutExitInfo keeps incomplete free proxies available for later
+// health probing instead of deleting them during every process restart.
+func (s *Storage) QuarantineWithoutExitInfo() (int64, error) {
+	res, err := s.db.Exec(`UPDATE proxies SET status='disabled',
+		fail_count=CASE WHEN fail_count < 1 THEN 1 ELSE fail_count END,
+		failure_since=COALESCE(failure_since, CURRENT_TIMESTAMP),
+		last_check=COALESCE(last_check, CURRENT_TIMESTAMP)
+		WHERE source = 'free' AND status != 'disabled' AND (exit_ip = '' OR exit_location = '')`)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// DeleteWithoutExitInfo is kept for callers built against older versions.
+// It now follows the non-destructive quarantine lifecycle.
+func (s *Storage) DeleteWithoutExitInfo() (int64, error) {
+	return s.QuarantineWithoutExitInfo()
 }
 
 // DisableBlockedCountries 禁用订阅代理中属于被屏蔽国家的（不删除）

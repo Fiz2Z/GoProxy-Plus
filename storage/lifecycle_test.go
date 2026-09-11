@@ -49,3 +49,25 @@ func TestFailureLifecycleDisablesThenExpires(t *testing.T) {
 		t.Fatalf("delete expired failed proxy: deleted=%d err=%v", deleted, err)
 	}
 }
+
+func TestMissingExitInfoIsQuarantinedNotDeleted(t *testing.T) {
+	store, err := New(filepath.Join(t.TempDir(), "proxy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.db.Close()
+	if err := store.AddProxy("5.6.7.8:3128", "http"); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.QuarantineWithoutExitInfo()
+	if err != nil || changed != 1 {
+		t.Fatalf("quarantine: changed=%d err=%v", changed, err)
+	}
+	var status string
+	if err := store.db.QueryRow(`SELECT status FROM proxies WHERE address=?`, "5.6.7.8:3128").Scan(&status); err != nil {
+		t.Fatalf("proxy was deleted: %v", err)
+	}
+	if status != "disabled" {
+		t.Fatalf("expected disabled proxy, got %s", status)
+	}
+}
