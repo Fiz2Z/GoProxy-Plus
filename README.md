@@ -14,7 +14,7 @@ GoProxy 从公开代理源自动抓取 HTTP/SOCKS5 代理，同时支持导入 C
 
 ### 双池架构
 
-- **免费代理池** — 自动从 30+ 公开源抓取（含 Geonode、SCDN、RoundProxies），质量分级（S/A/B/C），智能补充与替换
+- **免费代理池** — 自动从多路公开源抓取（含 Geonode、SCDN、RoundProxies），质量分级（S/A/B/C），智能补充与替换
 - **订阅代理池** — 导入 Clash/V2ray 订阅，通过 sing-box 自动转换加密协议（vmess/vless/trojan/ss/hysteria2/anytls 等）为本地 SOCKS5 代理
 - **5 种使用模式** — 混合·订阅优先 / 混合·免费优先 / 混合·平等 / 仅订阅 / 仅免费，WebUI 随时切换
 

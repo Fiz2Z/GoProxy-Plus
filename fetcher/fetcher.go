@@ -1,7 +1,6 @@
 package fetcher
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,25 +29,21 @@ var fastUpdateSources = []Source{
 	{"https://roundproxies.com/api/get-free-proxies/?limit=50&page=1&sort_by=lastChecked&sort_type=desc", "http"},
 	// ProxyScraper - 每30分钟更新
 	{"https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt", "http"},
-	{"https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/socks4.txt", "socks5"},
 	{"https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/socks5.txt", "socks5"},
 	// monosans - 每小时更新
 	{"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", "http"},
 	// prxchk - 频繁更新
 	{"https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt", "http"},
 	{"https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt", "socks5"},
-	{"https://raw.githubusercontent.com/prxchk/proxy-list/main/socks4.txt", "socks5"},
 	// sunny9577 - 自动抓取更新
 	{"https://cdn.jsdelivr.net/gh/sunny9577/proxy-scraper/generated/http_proxies.txt", "http"},
 	{"https://cdn.jsdelivr.net/gh/sunny9577/proxy-scraper/generated/socks5_proxies.txt", "socks5"},
-	{"https://cdn.jsdelivr.net/gh/sunny9577/proxy-scraper/generated/socks4_proxies.txt", "socks5"},
 }
 
 // 慢速更新源（每天更新）- 用于优化轮换模式
 var slowUpdateSources = []Source{
 	// TheSpeedX - 每天更新，量大
 	{"https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt", "http"},
-	{"https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt", "socks5"},
 	{"https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt", "socks5"},
 	// monosans SOCKS
 	{"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt", "socks5"},
@@ -59,17 +54,13 @@ var slowUpdateSources = []Source{
 	// Anonym0usWork1221 - 量大质量尚可
 	{"https://cdn.jsdelivr.net/gh/Anonym0usWork1221/Free-Proxies/proxy_files/http_proxies.txt", "http"},
 	{"https://cdn.jsdelivr.net/gh/Anonym0usWork1221/Free-Proxies/proxy_files/socks5_proxies.txt", "socks5"},
-	{"https://cdn.jsdelivr.net/gh/Anonym0usWork1221/Free-Proxies/proxy_files/socks4_proxies.txt", "socks5"},
 	// ALIILAPRO
 	{"https://cdn.jsdelivr.net/gh/ALIILAPRO/Proxy/http.txt", "http"},
-	{"https://cdn.jsdelivr.net/gh/ALIILAPRO/Proxy/socks4.txt", "socks5"},
 	// vakhov/fresh-proxy-list
 	{"https://cdn.jsdelivr.net/gh/vakhov/fresh-proxy-list/http.txt", "http"},
 	{"https://cdn.jsdelivr.net/gh/vakhov/fresh-proxy-list/socks5.txt", "socks5"},
-	{"https://cdn.jsdelivr.net/gh/vakhov/fresh-proxy-list/socks4.txt", "socks5"},
 	// Zaeem20
 	{"https://cdn.jsdelivr.net/gh/Zaeem20/FREE_PROXIES_LIST/http.txt", "http"},
-	{"https://cdn.jsdelivr.net/gh/Zaeem20/FREE_PROXIES_LIST/socks4.txt", "socks5"},
 	// hookzof - socks5 专项
 	{"https://cdn.jsdelivr.net/gh/hookzof/socks5_list/proxy.txt", "socks5"},
 	// proxy4parsing
@@ -289,10 +280,13 @@ func validProxyAddress(ip, port string) (string, bool) {
 }
 
 func appendPayloadProxy(result *[]storage.Proxy, seen map[string]bool, address, protocol string) {
-	if seen[address] || address == "" {
+	if address == "" || seen[address] {
 		return
 	}
 	seen[address] = true
+	if protocol != "http" && protocol != "socks5" {
+		return
+	}
 	*result = append(*result, storage.Proxy{Address: address, Protocol: protocol})
 }
 
@@ -313,6 +307,9 @@ func protocolFromJSON(item map[string]interface{}, fallback string) string {
 		case "socks5":
 			return "socks5"
 		}
+	}
+	if len(values) > 0 {
+		return ""
 	}
 	return fallback
 }
@@ -352,35 +349,4 @@ func parseProxyPayload(data []byte, protocol string) []storage.Proxy {
 		}
 	}
 	return result
-}
-
-func parseProxyList(r io.Reader, protocol string) ([]storage.Proxy, error) {
-	var proxies []storage.Proxy
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		addr := line
-		proto := protocol
-		// 支持 protocol://host:port 格式
-		if idx := strings.Index(line, "://"); idx != -1 {
-			proto = line[:idx]
-			addr = line[idx+3:]
-			// socks4 当 socks5 处理
-			if proto == "socks4" {
-				proto = "socks5"
-			}
-		}
-		parts := strings.Split(addr, ":")
-		if len(parts) != 2 {
-			continue
-		}
-		proxies = append(proxies, storage.Proxy{
-			Address:  addr,
-			Protocol: proto,
-		})
-	}
-	return proxies, scanner.Err()
 }

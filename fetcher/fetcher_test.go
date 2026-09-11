@@ -24,7 +24,7 @@ func TestParseProxyPayloadSupportsDynamicSources(t *testing.T) {
 }
 
 func TestParseProxyPayloadRejectsInvalidAddress(t *testing.T) {
-	proxies := parseProxyPayload([]byte(`999.1.1.1:8080\n1.2.3.4:70000`), "http")
+	proxies := parseProxyPayload([]byte(`{"data":[{"ip":"1.2.3.4","port":"1080","protocols":["socks4"]}],"text":"999.1.1.1:8080 1.2.3.4:70000"}`), "http")
 	if len(proxies) != 0 {
 		t.Fatalf("expected no proxies, got %+v", proxies)
 	}
