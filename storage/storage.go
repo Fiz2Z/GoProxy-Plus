@@ -28,6 +28,7 @@ type Proxy struct {
 	Status         string    `json:"status"`
 	Source         string    `json:"source"`          // "free" 或 "custom"
 	SubscriptionID int64     `json:"subscription_id"` // 所属订阅ID（0=免费代理）
+	Origin         string    `json:"-"`               // 本轮抓取来源，仅用于验证质量统计
 }
 
 // Subscription 订阅信息
@@ -123,6 +124,40 @@ func (s *Storage) initSchema() error {
 	`)
 	if err != nil {
 		return err
+	}
+
+	// 迁移：记录各免费来源的验证漏斗与质量冷却状态。旧库按列增量升级，
+	// 不改动既有代理与 source_status 记录。
+	sourceMetricColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"candidate_total", "INTEGER NOT NULL DEFAULT 0"},
+		{"base_success_total", "INTEGER NOT NULL DEFAULT 0"},
+		{"tls_success_total", "INTEGER NOT NULL DEFAULT 0"},
+		{"exit_success_total", "INTEGER NOT NULL DEFAULT 0"},
+		{"admitted_total", "INTEGER NOT NULL DEFAULT 0"},
+		{"last_candidates", "INTEGER NOT NULL DEFAULT 0"},
+		{"last_base_success", "INTEGER NOT NULL DEFAULT 0"},
+		{"last_tls_success", "INTEGER NOT NULL DEFAULT 0"},
+		{"last_exit_success", "INTEGER NOT NULL DEFAULT 0"},
+		{"last_admitted", "INTEGER NOT NULL DEFAULT 0"},
+		{"low_quality_streak", "INTEGER NOT NULL DEFAULT 0"},
+		{"quality_status", "TEXT NOT NULL DEFAULT 'active'"},
+		{"quality_disabled_until", "DATETIME"},
+		{"last_validated", "DATETIME"},
+	}
+	for _, column := range sourceMetricColumns {
+		var exists int
+		if scanErr := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('source_status') WHERE name = ?`, column.name).Scan(&exists); scanErr != nil {
+			return fmt.Errorf("inspect source_status.%s: %w", column.name, scanErr)
+		}
+		if exists == 0 {
+			log.Printf("[storage] migrating: adding source_status.%s", column.name)
+			if _, alterErr := s.db.Exec(fmt.Sprintf("ALTER TABLE source_status ADD COLUMN %s %s", column.name, column.ddl)); alterErr != nil {
+				return fmt.Errorf("migrate source_status.%s: %w", column.name, alterErr)
+			}
+		}
 	}
 
 	// 迁移：处理旧的 location 字段（如果存在）

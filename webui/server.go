@@ -51,6 +51,7 @@ func validSession(r *http.Request) bool {
 }
 
 type FetchTrigger func()
+type SourceStatsProvider func() ([]map[string]interface{}, error)
 
 type Server struct {
 	storage          *storage.Storage
@@ -61,9 +62,10 @@ type Server struct {
 	configChanged    chan<- struct{}
 	applicationProxy *goproxy.AffinityManager
 	applicationToken string
+	sourceStats      SourceStatsProvider
 }
 
-func New(s *storage.Storage, cfg *config.Config, pm *pool.Manager, cm *custom.Manager, ap *goproxy.AffinityManager, ft FetchTrigger, cc chan<- struct{}) *Server {
+func New(s *storage.Storage, cfg *config.Config, pm *pool.Manager, cm *custom.Manager, ap *goproxy.AffinityManager, ft FetchTrigger, cc chan<- struct{}, sourceStats SourceStatsProvider) *Server {
 	return &Server{
 		storage:          s,
 		cfg:              cfg,
@@ -73,6 +75,7 @@ func New(s *storage.Storage, cfg *config.Config, pm *pool.Manager, cm *custom.Ma
 		configChanged:    cc,
 		applicationProxy: ap,
 		applicationToken: strings.TrimSpace(os.Getenv("APP_FEEDBACK_TOKEN")),
+		sourceStats:      sourceStats,
 	}
 }
 
@@ -97,6 +100,7 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/pool/status", s.readOnlyMiddleware(s.apiPoolStatus))
 	mux.HandleFunc("/api/pool/quality", s.readOnlyMiddleware(s.apiQualityDistribution))
 	mux.HandleFunc("/api/config", s.readOnlyMiddleware(s.apiConfig))
+	mux.HandleFunc("/api/sources/stats", s.readOnlyMiddleware(s.apiSourceStats))
 	mux.HandleFunc("/api/auth/check", s.apiAuthCheck) // 检查登录状态
 	mux.HandleFunc("/api/application/status", s.readOnlyMiddleware(s.apiApplicationStatus))
 	mux.HandleFunc("/api/application/feedback", s.applicationMiddleware(s.apiApplicationFeedback))
@@ -125,6 +129,23 @@ func (s *Server) Start() {
 			log.Fatalf("webui: %v", err)
 		}
 	}()
+}
+
+func (s *Server) apiSourceStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.sourceStats == nil {
+		jsonOK(w, map[string]interface{}{"items": []interface{}{}})
+		return
+	}
+	items, err := s.sourceStats()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]interface{}{"items": items})
 }
 
 func (s *Server) applicationMiddleware(next http.HandlerFunc) http.HandlerFunc {

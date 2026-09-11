@@ -100,7 +100,7 @@ func main() {
 	// 启动 WebUI（传递池子管理器和订阅管理器）
 	ui := webui.New(store, cfg, poolMgr, customMgr, applicationProxy, func() {
 		go smartFetchAndFill(fetch, validate, store, poolMgr)
-	}, configChanged)
+	}, configChanged, fetch.GetSourceStats)
 	ui.Start()
 
 	// 首次智能填充（清理后立即触发）
@@ -211,9 +211,39 @@ func smartFetchAndFill(fetch *fetcher.Fetcher, validate *validator.Validator, st
 	var rejectedLatency atomic.Int32
 	var rejectedGeo atomic.Int32
 	var rejectedFull atomic.Int32
+	sourceStats := make(map[string]*fetcher.ValidationStats)
+	failureStages := make(map[string]int)
+	var statsMu sync.Mutex
+
+	recordStage := func(result validator.Result) {
+		statsMu.Lock()
+		defer statsMu.Unlock()
+		if result.FailureStage != "" {
+			failureStages[result.FailureStage]++
+		}
+		if result.Proxy.Origin == "" {
+			return
+		}
+		stats := sourceStats[result.Proxy.Origin]
+		if stats == nil {
+			stats = &fetcher.ValidationStats{}
+			sourceStats[result.Proxy.Origin] = stats
+		}
+		stats.Candidates++
+		if result.BaseSuccess {
+			stats.BaseSuccess++
+		}
+		if result.TLSSuccess {
+			stats.TLSSuccess++
+		}
+		if result.ExitSuccess {
+			stats.ExitSuccess++
+		}
+	}
 
 	// 入池处理函数（两个协程共用）
 	processResult := func(result validator.Result) {
+		recordStage(result)
 		if !result.Valid {
 			return
 		}
@@ -231,6 +261,9 @@ func smartFetchAndFill(fetch *fetcher.Fetcher, validate *validator.Validator, st
 
 		if latencyMs > maxLatency {
 			rejectedLatency.Add(1)
+			statsMu.Lock()
+			failureStages["pool_latency"]++
+			statsMu.Unlock()
 			return
 		}
 
@@ -244,6 +277,11 @@ func smartFetchAndFill(fetch *fetcher.Fetcher, validate *validator.Validator, st
 
 		if added, reason := poolMgr.TryAddProxy(proxyToAdd); added {
 			addedCount.Add(1)
+			if result.Proxy.Origin != "" {
+				statsMu.Lock()
+				sourceStats[result.Proxy.Origin].Admitted++
+				statsMu.Unlock()
+			}
 		} else if reason == "slots_full" {
 			rejectedFull.Add(1)
 		} else if len(result.ExitLocation) >= 2 {
@@ -302,6 +340,9 @@ func smartFetchAndFill(fetch *fetcher.Fetcher, validate *validator.Validator, st
 	}
 
 	wg.Wait()
+	for sourceURL, stats := range sourceStats {
+		fetch.RecordValidationBatch(sourceURL, *stats)
+	}
 
 	// 最终状态
 	finalStatus, _ := poolMgr.GetStatus()
@@ -309,6 +350,7 @@ func smartFetchAndFill(fetch *fetcher.Fetcher, validate *validator.Validator, st
 		len(candidates), validCount.Load(), addedCount.Load(),
 		rejectedNoExit.Load(), rejectedLatency.Load(), rejectedGeo.Load(), rejectedFull.Load(),
 		finalStatus.State, finalStatus.HTTP, finalStatus.SOCKS5)
+	log.Printf("[main] 验证失败阶段: %v", failureStages)
 }
 
 // startStatusMonitor 状态监控协程

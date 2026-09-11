@@ -87,15 +87,28 @@ func New(httpURL, socks5URL string, sourceManager *SourceManager) *Fetcher {
 	}
 }
 
+func (f *Fetcher) RecordValidationBatch(url string, stats ValidationStats) {
+	if f.sourceManager != nil {
+		f.sourceManager.RecordValidationBatch(url, stats)
+	}
+}
+
+func (f *Fetcher) GetSourceStats() ([]map[string]interface{}, error) {
+	if f.sourceManager == nil {
+		return []map[string]interface{}{}, nil
+	}
+	return f.sourceManager.GetSourceStats()
+}
+
 // FetchSmart 智能抓取：根据模式和协议需求选择源
 func (f *Fetcher) FetchSmart(mode string, preferredProtocol string) ([]storage.Proxy, error) {
 	var sources []Source
 
 	switch mode {
 	case "emergency":
-		// 紧急模式：忽略断路器，强制使用所有源（包括被禁用的）
-		sources = f.filterAvailableSources(allSources, preferredProtocol, true)
-		log.Printf("[fetch] 🚨 紧急模式: 使用 %d 个源（忽略断路器）", len(sources))
+		// 紧急模式仍遵守传输与质量断路器，避免持续重扫已知低质量源。
+		sources = f.filterAvailableSources(allSources, preferredProtocol, false)
+		log.Printf("[fetch] 🚨 紧急模式: 使用 %d 个可用源（遵守质量冷却）", len(sources))
 
 	case "refill":
 		// 补充模式：使用快更新源
@@ -192,6 +205,7 @@ func (f *Fetcher) fetchFromSources(sources []Source) ([]storage.Proxy, error) {
 		for _, p := range r.proxies {
 			if !seen[p.Address] {
 				seen[p.Address] = true
+				p.Origin = r.source.URL
 				deduped = append(deduped, p)
 			}
 		}
@@ -235,6 +249,7 @@ func (f *Fetcher) Fetch() ([]storage.Proxy, error) {
 		for _, p := range r.proxies {
 			if !seen[p.Address] {
 				seen[p.Address] = true
+				p.Origin = r.source.URL
 				deduped = append(deduped, p)
 			}
 		}
