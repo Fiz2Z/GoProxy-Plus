@@ -362,15 +362,11 @@ func (s *Server) apiRefreshProxy(w http.ResponseWriter, r *http.Request) {
 		if valid {
 			latencyMs := int(latency.Milliseconds())
 			s.storage.UpdateExitInfo(req.Address, exitIP, exitLocation, latencyMs)
+			s.storage.ResetFail(req.Address)
 			log.Printf("[webui] proxy refreshed: %s latency=%dms grade=%s", req.Address, latencyMs, storage.CalculateQualityGrade(latencyMs))
 		} else {
-			if targetProxy.Source == "custom" {
-				s.storage.DisableProxy(req.Address)
-				log.Printf("[webui] custom proxy validation failed, disabled: %s", req.Address)
-			} else {
-				s.storage.Delete(req.Address)
-				log.Printf("[webui] proxy validation failed, removed: %s", req.Address)
-			}
+			s.storage.MarkProxyFailure(req.Address, false, max(2, cfg.MaxFailCount))
+			log.Printf("[webui] proxy validation failed, cooled/disabled: %s", req.Address)
 		}
 	}()
 
@@ -412,13 +408,10 @@ func (s *Server) apiRefreshLatency(w http.ResponseWriter, r *http.Request) {
 			if r.Valid {
 				latencyMs := int(r.Latency.Milliseconds())
 				s.storage.UpdateExitInfo(r.Proxy.Address, r.ExitIP, r.ExitLocation, latencyMs)
+				s.storage.ResetFail(r.Proxy.Address)
 				updated++
 			} else {
-				if r.Proxy.Source == "custom" {
-					s.storage.DisableProxy(r.Proxy.Address)
-				} else {
-					s.storage.Delete(r.Proxy.Address)
-				}
+				s.storage.MarkProxyFailure(r.Proxy.Address, false, max(2, cfg.MaxFailCount))
 			}
 		}
 		log.Printf("[webui] latency refresh done: updated=%d", updated)

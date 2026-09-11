@@ -208,6 +208,16 @@ func (s *Storage) initSchema() error {
 		s.db.Exec(`ALTER TABLE proxies ADD COLUMN subscription_id INTEGER NOT NULL DEFAULT 0`)
 	}
 
+	// 迁移：记录连续失败周期。代理先隔离/禁用，达到保留期后再清理。
+	var hasFailureSince int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('proxies') WHERE name='failure_since'`).Scan(&hasFailureSince)
+	if hasFailureSince == 0 {
+		log.Println("[storage] migrating: adding failure_since column")
+		if _, err = s.db.Exec(`ALTER TABLE proxies ADD COLUMN failure_since DATETIME`); err != nil {
+			return fmt.Errorf("migrate failure_since column: %w", err)
+		}
+	}
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_proxy_failure_lifecycle ON proxies(status, source, failure_since)`)
 	// 创建订阅表
 	_, err = s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS subscriptions (
@@ -287,7 +297,7 @@ func (s *Storage) GetRandom() (*Proxy, error) {
 	rows, err := s.db.Query(
 		`SELECT ` + proxyColumns + `
 		 FROM proxies
-		 WHERE status = 'active' AND fail_count < 3
+		 WHERE status IN ('active', 'degraded')
 		 ORDER BY
 		   CASE quality_grade
 		     WHEN 'S' THEN 1
@@ -351,7 +361,7 @@ func (s *Storage) GetAll() ([]Proxy, error) {
 func (s *Storage) GetAllFiltered(sourceFilter string) ([]Proxy, error) {
 	query := `SELECT ` + proxyColumns + `
 		 FROM proxies
-		 WHERE status IN ('active', 'degraded') AND fail_count < 3`
+		 WHERE status IN ('active', 'degraded')`
 	var args []interface{}
 	if sourceFilter != "" {
 		query += ` AND source = ?`
@@ -407,8 +417,45 @@ func (s *Storage) GetRandomExcludeFiltered(excludes []string, sourceFilter strin
 		return nil, fmt.Errorf("no available proxy after exclusions")
 	}
 
-	p := available[rand.Intn(len(available))]
+	p := weightedRandomProxy(available)
 	return &p, nil
+}
+
+// proxySelectionWeight keeps random rotation diverse while strongly preferring
+// proxies already measured as S/A grade. Consecutive failures reduce the chance
+// further until the proxy is disabled by the lifecycle policy.
+func proxySelectionWeight(p Proxy) int {
+	weight := 1
+	switch strings.ToUpper(p.QualityGrade) {
+	case "S":
+		weight = 16
+	case "A":
+		weight = 10
+	case "B":
+		weight = 3
+	}
+	for i := 0; i < p.FailCount; i++ {
+		weight = (weight + 1) / 2
+	}
+	if weight < 1 {
+		return 1
+	}
+	return weight
+}
+
+func weightedRandomProxy(proxies []Proxy) Proxy {
+	total := 0
+	for _, p := range proxies {
+		total += proxySelectionWeight(p)
+	}
+	pick := rand.Intn(total)
+	for _, p := range proxies {
+		pick -= proxySelectionWeight(p)
+		if pick < 0 {
+			return p
+		}
+	}
+	return proxies[len(proxies)-1]
 }
 
 // GetLowestLatencyExclude 排除指定地址后获取延迟最低的代理
@@ -466,7 +513,7 @@ func (s *Storage) GetRandomByProtocolExcludeFiltered(protocol string, excludes [
 		return nil, fmt.Errorf("no %s proxy available", protocol)
 	}
 
-	proxy := available[time.Now().UnixNano()%int64(len(available))]
+	proxy := weightedRandomProxy(available)
 	return &proxy, nil
 }
 
@@ -515,7 +562,9 @@ func (s *Storage) IncrFail(address string) error {
 // ResetFail 重置失败次数（验证通过）
 func (s *Storage) ResetFail(address string) error {
 	_, err := s.db.Exec(
-		`UPDATE proxies SET fail_count = 0, last_check = CURRENT_TIMESTAMP WHERE address = ?`,
+		`UPDATE proxies SET fail_count = 0, failure_since = NULL,
+		 status = CASE WHEN status = 'disabled' AND source = 'custom' THEN status ELSE 'active' END,
+		 last_check = CURRENT_TIMESTAMP WHERE address = ?`,
 		address,
 	)
 	return err
@@ -545,17 +594,53 @@ func (s *Storage) RecordProxyUse(address string, success bool) error {
 	if success {
 		_, err := s.db.Exec(
 			`UPDATE proxies SET use_count = use_count + 1, success_count = success_count + 1, 
+			 fail_count = 0, failure_since = NULL, status = 'active',
 			 last_used = CURRENT_TIMESTAMP WHERE address = ?`,
 			address,
 		)
 		return err
 	}
-	_, err := s.db.Exec(
-		`UPDATE proxies SET use_count = use_count + 1, fail_count = fail_count + 1, 
-		 last_used = CURRENT_TIMESTAMP WHERE address = ?`,
-		address,
-	)
+	return s.MarkProxyFailure(address, true, 3)
+}
+
+// MarkProxyFailure advances a consecutive-failure lifecycle without deleting
+// data. The first failures degrade the proxy; the threshold disables it.
+func (s *Storage) MarkProxyFailure(address string, countAsUse bool, disableAfter int) error {
+	if disableAfter < 2 {
+		disableAfter = 2
+	}
+	useIncrement := 0
+	if countAsUse {
+		useIncrement = 1
+	}
+	_, err := s.db.Exec(`UPDATE proxies SET
+		use_count = use_count + ?,
+		fail_count = fail_count + 1,
+		failure_since = COALESCE(failure_since, CURRENT_TIMESTAMP),
+		last_used = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE last_used END,
+		last_check = CURRENT_TIMESTAMP,
+		status = CASE WHEN fail_count + 1 >= ? THEN 'disabled' ELSE 'degraded' END
+		WHERE address = ?`, useIncrement, useIncrement, disableAfter, address)
 	return err
+}
+
+// DeleteExpiredFailed removes only free proxies that have remained in one
+// uninterrupted failure period for the configured retention window.
+func (s *Storage) DeleteExpiredFailed(retentionHours int) (int64, error) {
+	if retentionHours < 24 {
+		retentionHours = 24
+	}
+	if retentionHours > 48 {
+		retentionHours = 48
+	}
+	modifier := fmt.Sprintf("-%d hours", retentionHours)
+	res, err := s.db.Exec(`DELETE FROM proxies
+		WHERE source = 'free' AND status = 'disabled' AND failure_since IS NOT NULL
+		  AND failure_since <= datetime('now', ?)`, modifier)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // GetWorstProxies 获取指定协议中延迟最高的N个代理（仅免费代理）
@@ -652,7 +737,7 @@ func (s *Storage) GetQualityDistribution() (map[string]int, error) {
 	rows, err := s.db.Query(
 		`SELECT quality_grade, COUNT(*) as count 
 		 FROM proxies 
-		 WHERE status = 'active' AND fail_count < 3
+		 WHERE status IN ('active', 'degraded')
 		 GROUP BY quality_grade`,
 	)
 	if err != nil {
@@ -676,10 +761,12 @@ func (s *Storage) GetQualityDistribution() (map[string]int, error) {
 func (s *Storage) GetBatchForHealthCheck(batchSize int, skipSGrade bool) ([]Proxy, error) {
 	query := `SELECT ` + proxyColumns + `
 		 FROM proxies
-		 WHERE status IN ('active', 'degraded') AND fail_count < 3`
+		 WHERE (status IN ('active', 'degraded')
+		    OR (source = 'free' AND status = 'disabled' AND failure_since IS NOT NULL
+		        AND (last_check IS NULL OR last_check <= datetime('now', '-10 minutes'))))`
 
 	if skipSGrade {
-		query += ` AND quality_grade != 'S'`
+		query += ` AND (status = 'disabled' OR quality_grade != 'S')`
 	}
 
 	query += ` ORDER BY 
@@ -718,9 +805,12 @@ func CalculateQualityGrade(latencyMs int) string {
 	}
 }
 
-// DeleteInvalid 删除失败次数超过阈值的代理（仅免费代理）
+// DeleteInvalid is retained for compatibility; invalid proxies now enter the
+// disabled lifecycle and are only deleted by DeleteExpiredFailed.
 func (s *Storage) DeleteInvalid(maxFailCount int) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM proxies WHERE fail_count >= ? AND source = 'free'`, maxFailCount)
+	res, err := s.db.Exec(`UPDATE proxies SET status='disabled',
+		failure_since=COALESCE(failure_since, last_check, CURRENT_TIMESTAMP)
+		WHERE fail_count >= ? AND source = 'free'`, maxFailCount)
 	if err != nil {
 		return 0, err
 	}
@@ -822,7 +912,7 @@ func (s *Storage) DisableNotAllowedCountries(allowedCodes []string) (int64, erro
 func (s *Storage) Count() (int, error) {
 	var count int
 	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM proxies WHERE status IN ('active', 'degraded') AND fail_count < 3 AND source = 'free'`,
+		`SELECT COUNT(*) FROM proxies WHERE status IN ('active', 'degraded') AND source = 'free'`,
 	).Scan(&count)
 	return count, err
 }
@@ -831,7 +921,7 @@ func (s *Storage) Count() (int, error) {
 func (s *Storage) CountAll() (int, error) {
 	var count int
 	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM proxies WHERE status IN ('active', 'degraded') AND fail_count < 3`,
+		`SELECT COUNT(*) FROM proxies WHERE status IN ('active', 'degraded')`,
 	).Scan(&count)
 	return count, err
 }
@@ -840,7 +930,7 @@ func (s *Storage) CountAll() (int, error) {
 func (s *Storage) CountByProtocol(protocol string) (int, error) {
 	var count int
 	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM proxies WHERE status IN ('active', 'degraded') AND fail_count < 3 AND source = 'free' AND protocol = ?`,
+		`SELECT COUNT(*) FROM proxies WHERE status IN ('active', 'degraded') AND source = 'free' AND protocol = ?`,
 		protocol,
 	).Scan(&count)
 	return count, err
@@ -848,11 +938,7 @@ func (s *Storage) CountByProtocol(protocol string) (int, error) {
 
 // IncrementFailCount 增加失败次数
 func (s *Storage) IncrementFailCount(address string) error {
-	_, err := s.db.Exec(
-		`UPDATE proxies SET fail_count = fail_count + 1 WHERE address = ?`,
-		address,
-	)
-	return err
+	return s.MarkProxyFailure(address, false, 3)
 }
 
 // GetByProtocol 按协议获取代理列表
@@ -860,7 +946,7 @@ func (s *Storage) GetByProtocol(protocol string) ([]Proxy, error) {
 	rows, err := s.db.Query(
 		`SELECT `+proxyColumns+`
 		 FROM proxies
-		 WHERE status IN ('active', 'degraded') AND fail_count < 3 AND protocol = ?
+		 WHERE status IN ('active', 'degraded') AND protocol = ?
 		 ORDER BY latency ASC`, protocol,
 	)
 	if err != nil {
@@ -924,7 +1010,7 @@ func (s *Storage) DisableProxy(address string) error {
 // EnableProxy 启用代理（从禁用状态恢复）
 func (s *Storage) EnableProxy(address string) error {
 	_, err := s.db.Exec(
-		`UPDATE proxies SET status = 'active', fail_count = 0 WHERE address = ?`,
+		`UPDATE proxies SET status = 'active', fail_count = 0, failure_since = NULL WHERE address = ?`,
 		address,
 	)
 	return err
@@ -957,7 +1043,7 @@ func (s *Storage) GetDisabledCustomProxies() ([]Proxy, error) {
 func (s *Storage) CountBySource(source string) (int, error) {
 	var count int
 	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM proxies WHERE source = ? AND status IN ('active', 'degraded') AND fail_count < 3`,
+		`SELECT COUNT(*) FROM proxies WHERE source = ? AND status IN ('active', 'degraded')`,
 		source,
 	).Scan(&count)
 	return count, err
@@ -1024,7 +1110,7 @@ func (s *Storage) AddSubscription(name, url, filePath, format string, refreshMin
 // CountBySubscriptionID 统计指定订阅的可用/禁用代理数
 func (s *Storage) CountBySubscriptionID(subID int64) (active int, disabled int) {
 	s.db.QueryRow(
-		`SELECT COUNT(*) FROM proxies WHERE subscription_id = ? AND status IN ('active', 'degraded') AND fail_count < 3`,
+		`SELECT COUNT(*) FROM proxies WHERE subscription_id = ? AND status IN ('active', 'degraded')`,
 		subID,
 	).Scan(&active)
 	s.db.QueryRow(

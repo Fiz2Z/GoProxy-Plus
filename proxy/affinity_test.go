@@ -97,18 +97,30 @@ func TestSplitSessionUsername(t *testing.T) {
 	}
 }
 
-func TestShouldPenalizeApplicationResponse(t *testing.T) {
-	tests := map[int]bool{
-		200: false,
-		404: false,
-		408: true,
-		412: true,
-		429: true,
-		500: true,
+func TestApplicationAndTransportMetricsAreSeparated(t *testing.T) {
+	m := NewAffinityManager()
+	selector := selectorFrom(storage.Proxy{Address: "one", Protocol: "http"})
+	if _, err := m.Select("aid:metrics", "bilibili", "http", nil, selector); err != nil {
+		t.Fatal(err)
 	}
-	for status, want := range tests {
-		if got := shouldPenalizeApplicationResponse(status); got != want {
-			t.Fatalf("status %d: got %v, want %v", status, got, want)
-		}
+	m.RecordTransport("aid:metrics", "one", true, "")
+	m.Feedback("aid:metrics", false, "HTTP 412")
+	status := m.Status()
+	if status.TransportAttempts != 1 || status.TransportSuccessRate != 100 {
+		t.Fatalf("unexpected transport metrics: %+v", status)
+	}
+	if status.CollectionRequests != 1 || status.CollectionSuccessRate != 0 || status.RiskRate != 100 {
+		t.Fatalf("unexpected application metrics: %+v", status)
+	}
+}
+
+func TestFeedbackWithoutLiveLeaseStillCountsCollectionResult(t *testing.T) {
+	m := NewAffinityManager()
+	if m.Feedback("aid:no-lease", false, "proxy connection failed") {
+		t.Fatal("unexpected lease match")
+	}
+	status := m.Status()
+	if status.CollectionRequests != 1 || status.CollectionFailures != 1 {
+		t.Fatalf("unmatched feedback was not counted: %+v", status)
 	}
 }

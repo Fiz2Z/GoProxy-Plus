@@ -64,7 +64,7 @@ func getExitIPInfo(client *http.Client) (string, string) {
 
 	var result struct {
 		Status      string `json:"status"`
-		Query       string `json:"query"`       // IP 地址
+		Query       string `json:"query"` // IP 地址
 		Country     string `json:"country"`
 		CountryCode string `json:"countryCode"`
 		City        string `json:"city"`
@@ -79,7 +79,7 @@ func getExitIPInfo(client *http.Client) (string, string) {
 	if result.City != "" {
 		location = fmt.Sprintf("%s %s", result.CountryCode, result.City)
 	}
-	
+
 	return result.Query, location
 }
 
@@ -92,22 +92,10 @@ var httpsTestTargets = []string{
 	"https://httpbin.org/ip",
 }
 
-// checkHTTPSConnect 通过 HTTP 代理实际访问一个随机 HTTPS 网站，验证 CONNECT 隧道是否可用
-// 首次失败会换一个目标重试一次，避免目标网站偶尔抽风导致误杀
-func checkHTTPSConnect(proxyAddr string, timeout time.Duration) bool {
-	proxyURL, err := url.Parse(fmt.Sprintf("http://%s", proxyAddr))
-	if err != nil {
-		return false
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy:               http.ProxyURL(proxyURL),
-			TLSHandshakeTimeout: timeout,
-		},
-		Timeout: timeout,
-	}
-
+// checkRealHTTPS performs an actual TLS handshake through the configured
+// client. This validates SOCKS5 end-to-end HTTPS support as well as HTTP CONNECT.
+// Certificate verification remains enabled; a TCP-only success is not enough.
+func checkRealHTTPS(client *http.Client) bool {
 	// 随机起始索引
 	start := int(time.Now().UnixNano() % int64(len(httpsTestTargets)))
 
@@ -200,14 +188,20 @@ func (v *Validator) ValidateOne(p storage.Proxy) (bool, time.Duration, string, s
 		return false, latency, "", ""
 	}
 
+	// 所有入池协议都必须通过真实 HTTPS/TLS。此前 SOCKS5 只验证 HTTP，
+	// 会让“能握手但无法建立 TLS”的节点进入生产池。
+	if !checkRealHTTPS(client) {
+		return false, latency, "", ""
+	}
+
 	// 获取出口 IP 和地理位置（仅在验证通过时）
 	exitIP, exitLocation := getExitIPInfo(client)
-	
+
 	// 必须能获取到出口信息
 	if exitIP == "" || exitLocation == "" {
 		return false, latency, exitIP, exitLocation
 	}
-	
+
 	// 地理过滤：白名单优先，否则走黑名单
 	if v.cfg != nil && len(exitLocation) >= 2 {
 		countryCode := exitLocation[:2]
@@ -230,13 +224,6 @@ func (v *Validator) ValidateOne(p storage.Proxy) (bool, time.Duration, string, s
 					return false, latency, exitIP, exitLocation
 				}
 			}
-		}
-	}
-
-	// HTTP 代理额外检测：必须支持 HTTPS CONNECT 隧道
-	if p.Protocol == "http" {
-		if !checkHTTPSConnect(p.Address, v.timeout) {
-			return false, latency, exitIP, exitLocation
 		}
 	}
 

@@ -2,6 +2,9 @@ package checker
 
 import (
 	"log"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"goproxy/config"
@@ -9,6 +12,17 @@ import (
 	"goproxy/storage"
 	"goproxy/validator"
 )
+
+func boundedEnvInt(name string, fallback, minimum, maximum int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || value < minimum {
+		return fallback
+	}
+	if maximum > 0 && value > maximum {
+		return maximum
+	}
+	return value
+}
 
 // HealthChecker 健康检查器
 type HealthChecker struct {
@@ -31,6 +45,16 @@ func NewHealthChecker(s *storage.Storage, v *validator.Validator, cfg *config.Co
 func (hc *HealthChecker) RunOnce() {
 	start := time.Now()
 	log.Println("[health] 开始健康检查...")
+	disableAfter := boundedEnvInt("APP_DISABLE_AFTER_FAILURES", 3, 2, 20)
+	retentionHours := boundedEnvInt("APP_DELETE_AFTER_HOURS", 36, 24, 48)
+	defer func() {
+		deleted, err := hc.storage.DeleteExpiredFailed(retentionHours)
+		if err != nil {
+			log.Printf("[health] 清理过期失败代理失败: %v", err)
+		} else if deleted > 0 {
+			log.Printf("[health] 清理已隔离超过 %d 小时的免费代理: %d", retentionHours, deleted)
+		}
+	}()
 
 	// 获取池子状态
 	status, err := hc.poolMgr.GetStatus()
@@ -73,26 +97,20 @@ func (hc *HealthChecker) RunOnce() {
 			// 更新延迟和质量等级
 			latencyMs := int(result.Latency.Milliseconds())
 			if err := hc.storage.UpdateExitInfo(result.Proxy.Address, result.ExitIP, result.ExitLocation, latencyMs); err == nil {
+				hc.storage.ResetFail(result.Proxy.Address)
 				updateCount++
 			}
 		} else {
-			// 失败次数+1
-			hc.storage.IncrementFailCount(result.Proxy.Address)
-			// 如果失败次数 >= 3
-			if result.Proxy.FailCount+1 >= 3 {
-				if result.Proxy.Source == "custom" {
-					// 订阅代理：禁用而非删除
-					hc.storage.DisableProxy(result.Proxy.Address)
-				} else {
-					hc.storage.Delete(result.Proxy.Address)
-				}
+			// 首次失败降级，连续失败才禁用；不在健康检查中立即删除。
+			hc.storage.MarkProxyFailure(result.Proxy.Address, false, disableAfter)
+			if result.Proxy.FailCount+1 >= disableAfter {
 				removeCount++
 			}
 		}
 	}
 
 	elapsed := time.Since(start)
-	log.Printf("[health] 完成: 验证%d 有效%d 更新%d 移除%d 耗时%v",
+	log.Printf("[health] 完成: 验证%d 有效%d 更新%d 禁用%d 耗时%v",
 		len(proxies), validCount, updateCount, removeCount, elapsed)
 }
 

@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,7 +117,7 @@ func (s *Server) selectProxy(tried []string, lowestLatency bool, session, target
 	selector := func(excludes []string) (*storage.Proxy, error) {
 		return s.selectProxyFromStorage(excludes, lowestLatency, sourceFilter, cfg)
 	}
-	if s.affinity != nil && session != "" {
+	if s.affinity != nil {
 		return s.affinity.Select(session, target, s.port, tried, selector)
 	}
 	return selector(tried)
@@ -152,12 +154,19 @@ func (s *Server) selectProxyFromStorage(tried []string, lowestLatency bool, sour
 	return s.storage.GetRandomExcludeFiltered(tried, sourceFilter)
 }
 
-// removeOrDisableProxy 根据代理来源决定删除或禁用
-func removeOrDisableProxy(store *storage.Storage, p *storage.Proxy) {
-	if p.Source == "custom" {
-		store.DisableProxy(p.Address)
-	} else {
-		store.Delete(p.Address)
+func proxyDisableThreshold() int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("APP_DISABLE_AFTER_FAILURES")))
+	if err != nil || value < 2 {
+		return 3
+	}
+	return value
+}
+
+// recordProxyFailure keeps the proxy for later probing. A single failure only
+// degrades/cools it; repeated consecutive failures disable it.
+func recordProxyFailure(store *storage.Storage, p *storage.Proxy) {
+	if err := store.MarkProxyFailure(p.Address, true, proxyDisableThreshold()); err != nil {
+		log.Printf("[proxy] record failure for %s: %v", p.Address, err)
 	}
 }
 
@@ -188,9 +197,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request, session stri
 		client, err := s.buildClient(p)
 		if err != nil {
 			if s.affinity != nil {
-				s.affinity.Feedback(session, false, err.Error())
+				s.affinity.RecordTransport(session, p.Address, false, err.Error())
 			}
-			removeOrDisableProxy(s.storage, p)
+			recordProxyFailure(s.storage, p)
 			continue
 		}
 
@@ -206,12 +215,11 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request, session stri
 
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("[proxy] %s via %s failed, removing", r.RequestURI, p.Address)
-			s.storage.RecordProxyUse(p.Address, false)
+			log.Printf("[proxy] %s via %s failed, cooling", r.RequestURI, p.Address)
 			if s.affinity != nil {
-				s.affinity.Feedback(session, false, err.Error())
+				s.affinity.RecordTransport(session, p.Address, false, err.Error())
 			}
-			removeOrDisableProxy(s.storage, p)
+			recordProxyFailure(s.storage, p)
 			continue
 		}
 		defer resp.Body.Close()
@@ -225,8 +233,8 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request, session stri
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 		s.storage.RecordProxyUse(p.Address, true)
-		if s.affinity != nil && shouldPenalizeApplicationResponse(resp.StatusCode) {
-			s.affinity.Feedback(session, false, fmt.Sprintf("HTTP %d", resp.StatusCode))
+		if s.affinity != nil {
+			s.affinity.RecordTransport(session, p.Address, true, "")
 		}
 		if resp.StatusCode == 429 {
 			log.Printf("[proxy] ⚠️  429 %s via %s (protocol=%s)", r.RequestURI, p.Address, p.Protocol)
@@ -237,13 +245,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request, session stri
 	}
 
 	http.Error(w, "all proxies failed", http.StatusBadGateway)
-}
-
-func shouldPenalizeApplicationResponse(statusCode int) bool {
-	return statusCode == http.StatusRequestTimeout ||
-		statusCode == http.StatusPreconditionFailed ||
-		statusCode == http.StatusTooManyRequests ||
-		statusCode >= http.StatusInternalServerError
 }
 
 // handleTunnel 处理 HTTPS CONNECT 隧道（带自动重试）
@@ -260,16 +261,18 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request, session st
 
 		conn, err := s.dialViaProxy(p, r.Host)
 		if err != nil {
-			log.Printf("[tunnel] dial %s via %s failed, removing", r.Host, p.Address)
-			s.storage.RecordProxyUse(p.Address, false)
+			log.Printf("[tunnel] dial %s via %s failed, cooling", r.Host, p.Address)
 			if s.affinity != nil {
-				s.affinity.Feedback(session, false, err.Error())
+				s.affinity.RecordTransport(session, p.Address, false, err.Error())
 			}
-			removeOrDisableProxy(s.storage, p)
+			recordProxyFailure(s.storage, p)
 			continue
 		}
 
 		s.storage.RecordProxyUse(p.Address, true)
+		if s.affinity != nil {
+			s.affinity.RecordTransport(session, p.Address, true, "")
+		}
 
 		// 告知客户端隧道建立
 		hijacker, ok := w.(http.Hijacker)
@@ -312,9 +315,10 @@ func (s *Server) dialViaProxy(p *storage.Proxy, host string) (net.Conn, error) {
 			conn.Close()
 			return nil, err
 		}
-		if n < 12 {
+		statusLine := string(buf[:n])
+		if n < 12 || (!strings.HasPrefix(statusLine, "HTTP/1.1 200") && !strings.HasPrefix(statusLine, "HTTP/1.0 200")) {
 			conn.Close()
-			return nil, fmt.Errorf("short response from proxy")
+			return nil, fmt.Errorf("upstream proxy CONNECT rejected")
 		}
 		return conn, nil
 	case "socks5":

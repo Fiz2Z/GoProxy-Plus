@@ -2,10 +2,14 @@ package fetcher
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +24,10 @@ type Source struct {
 
 // 快速更新源（5-30分钟更新）- 用于紧急和补充模式
 var fastUpdateSources = []Source{
+	// jhao104/proxy_pool 中与现有列表不重复的动态来源。
+	{"https://proxylist.geonode.com/api/proxy-list?filterLastChecked=10&page=1&limit=100&sort_by=lastChecked&sort_type=desc", "http"},
+	{"https://proxy.scdn.io/get_proxies.php?protocol=http&country=&per_page=100&page=1", "http"},
+	{"https://roundproxies.com/api/get-free-proxies/?limit=50&page=1&sort_by=lastChecked&sort_type=desc", "http"},
 	// ProxyScraper - 每30分钟更新
 	{"https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt", "http"},
 	{"https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/socks4.txt", "socks5"},
@@ -261,7 +269,89 @@ func (f *Fetcher) fetchFromURL(url, protocol string) ([]storage.Proxy, error) {
 		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
 	}
 
-	return parseProxyList(resp.Body, protocol)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	return parseProxyPayload(data, protocol), nil
+}
+
+var embeddedAddressPattern = regexp.MustCompile(`(?m)(?:https?://|socks[45]?://)?((?:\d{1,3}\.){3}\d{1,3}):(\d{2,5})`)
+var tableAddressPattern = regexp.MustCompile(`(?is)((?:\d{1,3}\.){3}\d{1,3})\s*</td>\s*<td[^>]*>\s*(\d{2,5})`)
+
+func validProxyAddress(ip, port string) (string, bool) {
+	parsed := net.ParseIP(ip)
+	portNumber, err := strconv.Atoi(port)
+	if parsed == nil || parsed.To4() == nil || err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", false
+	}
+	return net.JoinHostPort(ip, port), true
+}
+
+func appendPayloadProxy(result *[]storage.Proxy, seen map[string]bool, address, protocol string) {
+	if seen[address] || address == "" {
+		return
+	}
+	seen[address] = true
+	*result = append(*result, storage.Proxy{Address: address, Protocol: protocol})
+}
+
+func protocolFromJSON(item map[string]interface{}, fallback string) string {
+	values := make([]string, 0, 2)
+	if value, ok := item["protocol"].(string); ok {
+		values = append(values, value)
+	}
+	if list, ok := item["protocols"].([]interface{}); ok {
+		for _, value := range list {
+			values = append(values, fmt.Sprint(value))
+		}
+	}
+	for _, candidate := range values {
+		switch strings.ToLower(strings.TrimSpace(candidate)) {
+		case "http", "https":
+			return "http"
+		case "socks5":
+			return "socks5"
+		}
+	}
+	return fallback
+}
+
+func collectJSONProxies(value interface{}, protocol string, result *[]storage.Proxy, seen map[string]bool) {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		ip := fmt.Sprint(typed["ip"])
+		port := fmt.Sprint(typed["port"])
+		if address, ok := validProxyAddress(ip, port); ok {
+			appendPayloadProxy(result, seen, address, protocolFromJSON(typed, protocol))
+		}
+		for _, child := range typed {
+			collectJSONProxies(child, protocol, result, seen)
+		}
+	case []interface{}:
+		for _, child := range typed {
+			collectJSONProxies(child, protocol, result, seen)
+		}
+	}
+}
+
+// parseProxyPayload supports the original one-address-per-line feeds plus the
+// JSON/HTML response shapes used by Geonode, SCDN and RoundProxies.
+func parseProxyPayload(data []byte, protocol string) []storage.Proxy {
+	result := make([]storage.Proxy, 0)
+	seen := make(map[string]bool)
+	var decoded interface{}
+	if json.Unmarshal(data, &decoded) == nil {
+		collectJSONProxies(decoded, protocol, &result, seen)
+	}
+	for _, pattern := range []*regexp.Regexp{embeddedAddressPattern, tableAddressPattern} {
+		for _, match := range pattern.FindAllSubmatch(data, -1) {
+			if address, ok := validProxyAddress(string(match[1]), string(match[2])); ok {
+				appendPayloadProxy(&result, seen, address, protocol)
+			}
+		}
+	}
+	return result
 }
 
 func parseProxyList(r io.Reader, protocol string) ([]storage.Proxy, error) {

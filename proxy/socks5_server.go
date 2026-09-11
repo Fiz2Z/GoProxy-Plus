@@ -98,12 +98,11 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 		// 连接上游代理
 		upstreamConn, err := s.dialViaProxy(p, target)
 		if err != nil {
-			log.Printf("[socks5] dial %s via %s (%s) failed: %v, removing", target, p.Address, p.Protocol, err)
-			s.storage.RecordProxyUse(p.Address, false)
+			log.Printf("[socks5] dial %s via %s (%s) failed: %v, cooling", target, p.Address, p.Protocol, err)
 			if s.affinity != nil {
-				s.affinity.Feedback(session, false, err.Error())
+				s.affinity.RecordTransport(session, p.Address, false, err.Error())
 			}
-			removeOrDisableProxy(s.storage, p)
+			recordProxyFailure(s.storage, p)
 			continue
 		}
 
@@ -114,6 +113,9 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 		}
 
 		s.storage.RecordProxyUse(p.Address, true)
+		if s.affinity != nil {
+			s.affinity.RecordTransport(session, p.Address, true, "")
+		}
 		log.Printf("[socks5] %s via %s established", target, p.Address)
 
 		// 双向转发数据
@@ -137,7 +139,7 @@ func (s *SOCKS5Server) selectSOCKS5Proxy(tried []string, session, target string)
 	selector := func(excludes []string) (*storage.Proxy, error) {
 		return s.selectSOCKS5ProxyFromStorage(excludes, sourceFilter, cfg)
 	}
-	if s.affinity != nil && session != "" {
+	if s.affinity != nil {
 		return s.affinity.Select(session, target, s.port, tried, selector)
 	}
 	return selector(tried)

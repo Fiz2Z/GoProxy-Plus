@@ -339,7 +339,7 @@ td{padding:13px 14px;border-bottom:1px solid #edf0f5;color:var(--fg-dim)}tr:last
 
       <!-- 订阅代理池 -->
       <div class="panel-label" data-i18n="health.sub_pool">订阅代理池</div>
-      <div class="health-grid" style="grid-template-columns:repeat(3,1fr)">
+      <div class="health-grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))">
         <div class="health-card">
           <div class="health-label" data-i18n="health.sub_sources">订阅源</div>
           <div class="health-value" id="stat-sub-count">0</div>
@@ -370,8 +370,18 @@ td{padding:13px 14px;border-bottom:1px solid #edf0f5;color:var(--fg-dim)}tr:last
           <div class="health-meta">自动恢复</div>
         </div>
         <div class="health-card">
-          <div class="health-label">成功率</div>
-          <div class="health-value" id="app-success-rate">—</div>
+          <div class="health-label">采集成功率</div>
+          <div class="health-value" id="app-collection-rate">—</div>
+          <div class="health-meta"><span id="app-collection-count">0</span> 次结果反馈</div>
+        </div>
+        <div class="health-card">
+          <div class="health-label">代理连接率</div>
+          <div class="health-value" id="app-transport-rate">—</div>
+          <div class="health-meta"><span id="app-transport-count">0</span> 次连接</div>
+        </div>
+        <div class="health-card">
+          <div class="health-label">B站风控率</div>
+          <div class="health-value" id="app-risk-rate">—</div>
           <div class="health-meta"><span id="app-risk-failures">0</span> 次风控</div>
         </div>
       </div>
@@ -1102,8 +1112,16 @@ async function loadApplicationStatus() {
     document.getElementById('app-cooling-proxies').textContent = status.cooling_proxies || 0;
     document.getElementById('app-lease-ttl').textContent = status.lease_ttl_seconds || '—';
     document.getElementById('app-risk-failures').textContent = status.risk_failures || 0;
-    document.getElementById('app-success-rate').textContent = status.requests
-      ? Number(status.success_rate || 0).toFixed(1) + '%'
+    document.getElementById('app-collection-count').textContent = status.collection_requests || 0;
+    document.getElementById('app-transport-count').textContent = status.transport_attempts || 0;
+    document.getElementById('app-collection-rate').textContent = status.collection_requests
+      ? Number(status.collection_success_rate || 0).toFixed(1) + '%'
+      : '—';
+    document.getElementById('app-transport-rate').textContent = status.transport_attempts
+      ? Number(status.transport_success_rate || 0).toFixed(1) + '%'
+      : '—';
+    document.getElementById('app-risk-rate').textContent = status.collection_requests
+      ? Number(status.risk_rate || 0).toFixed(1) + '%'
       : '—';
   } catch (error) {
     console.warn('Application proxy status unavailable', error);

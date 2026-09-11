@@ -65,14 +65,15 @@ func (c *Checker) run() {
 					log.Printf("[checker] update latency error: %v", err)
 				}
 			}
+			c.storage.ResetFail(r.Proxy.Address)
 		} else {
 			invalid++
-			if err := c.storage.Delete(r.Proxy.Address); err != nil {
-				log.Printf("[checker] delete error: %v", err)
+			if err := c.storage.MarkProxyFailure(r.Proxy.Address, false, boundedEnvInt("APP_DISABLE_AFTER_FAILURES", 3, 2, 20)); err != nil {
+				log.Printf("[checker] record failure error: %v", err)
 			}
 		}
 	}
 
 	count, _ := c.storage.Count()
-	log.Printf("[checker] done: valid=%d invalid(deleted)=%d remaining=%d", valid, invalid, count)
+	log.Printf("[checker] done: valid=%d invalid(cooled/disabled)=%d remaining=%d", valid, invalid, count)
 }

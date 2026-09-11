@@ -37,14 +37,24 @@ type affinityCooldown struct {
 // ApplicationProxyStatus is intentionally aggregate-only. Upstream addresses
 // never leave GoProxy's process through the status API.
 type ApplicationProxyStatus struct {
-	Enabled          bool    `json:"enabled"`
-	LeaseTTLSeconds  int     `json:"lease_ttl_seconds"`
-	ActiveLeases     int     `json:"active_leases"`
-	CoolingProxies   int     `json:"cooling_proxies"`
+	Enabled               bool    `json:"enabled"`
+	LeaseTTLSeconds       int     `json:"lease_ttl_seconds"`
+	ActiveLeases          int     `json:"active_leases"`
+	CoolingProxies        int     `json:"cooling_proxies"`
+	CollectionRequests    int64   `json:"collection_requests"`
+	CollectionSuccesses   int64   `json:"collection_successes"`
+	CollectionFailures    int64   `json:"collection_failures"`
+	CollectionSuccessRate float64 `json:"collection_success_rate"`
+	TransportAttempts     int64   `json:"transport_attempts"`
+	TransportSuccesses    int64   `json:"transport_successes"`
+	TransportFailures     int64   `json:"transport_failures"`
+	TransportSuccessRate  float64 `json:"transport_success_rate"`
+	RiskFailures          int64   `json:"risk_failures"`
+	RiskRate              float64 `json:"risk_rate"`
+	// Legacy aliases keep older topic-stats deployments compatible.
 	Requests         int64   `json:"requests"`
 	Successes        int64   `json:"successes"`
 	Failures         int64   `json:"failures"`
-	RiskFailures     int64   `json:"risk_failures"`
 	SuccessRate      float64 `json:"success_rate"`
 	LastFailure      string  `json:"last_failure"`
 	LastFailureAt    string  `json:"last_failure_at"`
@@ -68,12 +78,15 @@ type AffinityManager struct {
 	cooldowns     map[string]affinityCooldown
 	riskStrikes   map[string]int
 
-	requests      int64
-	successes     int64
-	failures      int64
-	riskFailures  int64
-	lastFailure   string
-	lastFailureAt time.Time
+	collectionRequests  int64
+	collectionSuccesses int64
+	collectionFailures  int64
+	transportAttempts   int64
+	transportSuccesses  int64
+	transportFailures   int64
+	riskFailures        int64
+	lastFailure         string
+	lastFailureAt       time.Time
 }
 
 func durationFromEnv(name string, fallback, minimum time.Duration) time.Duration {
@@ -189,7 +202,18 @@ func (m *AffinityManager) Select(session, target, scope string, tried []string, 
 	target = normalizeAffinityValue(target, "general")
 	scope = normalizeAffinityValue(scope, "default")
 	if session == "" {
-		return selector(tried)
+		now := time.Now()
+		m.mu.Lock()
+		m.cleanupLocked(now)
+		excludes := appendUnique(nil, tried...)
+		for address := range m.cooldowns {
+			excludes = appendUnique(excludes, address)
+		}
+		for address := range m.owners {
+			excludes = appendUnique(excludes, address)
+		}
+		m.mu.Unlock()
+		return selector(excludes)
 	}
 
 	now := time.Now()
@@ -272,6 +296,45 @@ func (m *AffinityManager) cooldownForRiskLocked(address string) (time.Duration, 
 	return duration, strike
 }
 
+func (m *AffinityManager) invalidateAddressLocked(address string) {
+	key, ok := m.owners[address]
+	if !ok {
+		return
+	}
+	lease, leaseOK := m.leases[key]
+	delete(m.leases, key)
+	delete(m.owners, address)
+	if leaseOK && m.lastBySession[lease.Session] == key {
+		delete(m.lastBySession, lease.Session)
+	}
+}
+
+// RecordTransport tracks whether GoProxy could establish the upstream
+// connection. It is deliberately separate from Feedback: a working TLS tunnel
+// may still receive a Bilibili risk response, and those are different signals.
+func (m *AffinityManager) RecordTransport(session, address string, success bool, reason string) bool {
+	address = normalizeAffinityValue(address, "")
+	if address == "" {
+		return false
+	}
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(now)
+	m.transportAttempts++
+	if success {
+		m.transportSuccesses++
+		return true
+	}
+	m.transportFailures++
+	m.cooldowns[address] = affinityCooldown{
+		Until:  now.Add(m.failureCooldown),
+		Reason: normalizeAffinityValue(reason, "proxy connection failed"),
+	}
+	m.invalidateAddressLocked(address)
+	return true
+}
+
 // Feedback applies the application result to the most recently used lease for
 // this session. A failed lease is always invalidated so the next retry must use
 // a different upstream.
@@ -284,6 +347,18 @@ func (m *AffinityManager) Feedback(session string, success bool, reason string) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanupLocked(now)
+	m.collectionRequests++
+	risk := !success && isRiskReason(reason)
+	if success {
+		m.collectionSuccesses++
+	} else {
+		m.collectionFailures++
+		if risk {
+			m.riskFailures++
+		}
+		m.lastFailure = normalizeAffinityValue(reason, "request failed")
+		m.lastFailureAt = now
+	}
 	key, ok := m.lastBySession[session]
 	if !ok {
 		return false
@@ -293,9 +368,7 @@ func (m *AffinityManager) Feedback(session string, success bool, reason string) 
 		delete(m.lastBySession, session)
 		return false
 	}
-	m.requests++
 	if success {
-		m.successes++
 		lease.ExpiresAt = now.Add(m.leaseTTL)
 		lease.LastUsed = now
 		m.leases[key] = lease
@@ -305,12 +378,9 @@ func (m *AffinityManager) Feedback(session string, success bool, reason string) 
 		return true
 	}
 
-	m.failures++
-	risk := isRiskReason(reason)
 	duration := m.failureCooldown
 	strike := 0
 	if risk {
-		m.riskFailures++
 		duration, strike = m.cooldownForRiskLocked(lease.Proxy.Address)
 	}
 	m.cooldowns[lease.Proxy.Address] = affinityCooldown{
@@ -319,13 +389,7 @@ func (m *AffinityManager) Feedback(session string, success bool, reason string) 
 		Risk:   risk,
 		Strike: strike,
 	}
-	m.lastFailure = normalizeAffinityValue(reason, "request failed")
-	m.lastFailureAt = now
-	delete(m.leases, key)
-	delete(m.lastBySession, session)
-	if m.owners[lease.Proxy.Address] == key {
-		delete(m.owners, lease.Proxy.Address)
-	}
+	m.invalidateAddressLocked(lease.Proxy.Address)
 	return true
 }
 
@@ -357,18 +421,29 @@ func (m *AffinityManager) Status() ApplicationProxyStatus {
 	defer m.mu.Unlock()
 	m.cleanupLocked(now)
 	status := ApplicationProxyStatus{
-		Enabled:         true,
-		LeaseTTLSeconds: int(m.leaseTTL / time.Second),
-		ActiveLeases:    len(m.leases),
-		CoolingProxies:  len(m.cooldowns),
-		Requests:        m.requests,
-		Successes:       m.successes,
-		Failures:        m.failures,
-		RiskFailures:    m.riskFailures,
-		LastFailure:     m.lastFailure,
+		Enabled:             true,
+		LeaseTTLSeconds:     int(m.leaseTTL / time.Second),
+		ActiveLeases:        len(m.leases),
+		CoolingProxies:      len(m.cooldowns),
+		CollectionRequests:  m.collectionRequests,
+		CollectionSuccesses: m.collectionSuccesses,
+		CollectionFailures:  m.collectionFailures,
+		TransportAttempts:   m.transportAttempts,
+		TransportSuccesses:  m.transportSuccesses,
+		TransportFailures:   m.transportFailures,
+		RiskFailures:        m.riskFailures,
+		Requests:            m.collectionRequests,
+		Successes:           m.collectionSuccesses,
+		Failures:            m.collectionFailures,
+		LastFailure:         m.lastFailure,
 	}
-	if m.requests > 0 {
-		status.SuccessRate = float64(m.successes) * 100 / float64(m.requests)
+	if m.collectionRequests > 0 {
+		status.CollectionSuccessRate = float64(m.collectionSuccesses) * 100 / float64(m.collectionRequests)
+		status.RiskRate = float64(m.riskFailures) * 100 / float64(m.collectionRequests)
+		status.SuccessRate = status.CollectionSuccessRate
+	}
+	if m.transportAttempts > 0 {
+		status.TransportSuccessRate = float64(m.transportSuccesses) * 100 / float64(m.transportAttempts)
 	}
 	if !m.lastFailureAt.IsZero() {
 		status.LastFailureAt = m.lastFailureAt.Format(time.RFC3339)
