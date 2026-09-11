@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -221,7 +224,7 @@ func (s *Server) readOnlyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// 允许访客访问（只读模式），管理员登录后有完整权限
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, dashboardHTML)
+	fmt.Fprint(w, dashboardV2HTML)
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -299,7 +302,149 @@ func (s *Server) apiProxies(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if r.URL.Query().Get("paged") == "1" {
+		jsonOK(w, buildProxyPage(proxies, r.URL.Query()))
+		return
+	}
 	jsonOK(w, proxies)
+}
+
+type proxyPage struct {
+	Items     []storage.Proxy `json:"items"`
+	Total     int             `json:"total"`
+	Page      int             `json:"page"`
+	PageSize  int             `json:"page_size"`
+	Pages     int             `json:"pages"`
+	Countries []string        `json:"countries"`
+}
+
+func queryInt(values url.Values, key string, fallback int) int {
+	value, err := strconv.Atoi(values.Get(key))
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
+}
+
+// buildProxyPage keeps the legacy array response intact while allowing the
+// dashboard to render a bounded number of rows. Filtering before pagination
+// also prevents large pools from being shipped to and rebuilt by the browser.
+func buildProxyPage(proxies []storage.Proxy, values url.Values) proxyPage {
+	protocol := strings.ToLower(strings.TrimSpace(values.Get("protocol")))
+	country := strings.ToUpper(strings.TrimSpace(values.Get("country")))
+	grade := strings.ToUpper(strings.TrimSpace(values.Get("grade")))
+	source := strings.ToLower(strings.TrimSpace(values.Get("source")))
+	query := strings.ToLower(strings.TrimSpace(values.Get("q")))
+
+	filtered := make([]storage.Proxy, 0, len(proxies))
+	countrySet := make(map[string]struct{})
+	for _, item := range proxies {
+		if protocol != "" && strings.ToLower(item.Protocol) != protocol {
+			continue
+		}
+		if source != "" && strings.ToLower(item.Source) != source {
+			continue
+		}
+		if grade != "" && strings.ToUpper(item.QualityGrade) != grade {
+			continue
+		}
+		fields := strings.Fields(item.ExitLocation)
+		itemCountry := ""
+		if len(fields) > 0 {
+			itemCountry = strings.ToUpper(fields[0])
+			countrySet[itemCountry] = struct{}{}
+		}
+		if country != "" && itemCountry != country {
+			continue
+		}
+		if query != "" {
+			haystack := strings.ToLower(strings.Join([]string{
+				item.Address, item.ExitIP, item.ExitLocation, item.Protocol,
+				item.QualityGrade, item.Source,
+			}, " "))
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+
+	gradeRank := map[string]int{"S": 0, "A": 1, "B": 2, "C": 3}
+	switch values.Get("sort") {
+	case "grade":
+		sort.SliceStable(filtered, func(i, j int) bool {
+			left, lok := gradeRank[strings.ToUpper(filtered[i].QualityGrade)]
+			right, rok := gradeRank[strings.ToUpper(filtered[j].QualityGrade)]
+			if !lok {
+				left = 4
+			}
+			if !rok {
+				right = 4
+			}
+			if left == right {
+				return filtered[i].Latency < filtered[j].Latency
+			}
+			return left < right
+		})
+	case "usage":
+		sort.SliceStable(filtered, func(i, j int) bool {
+			return filtered[i].UseCount > filtered[j].UseCount
+		})
+	case "success":
+		sort.SliceStable(filtered, func(i, j int) bool {
+			return filtered[i].SuccessCount > filtered[j].SuccessCount
+		})
+	case "latency_desc":
+		sort.SliceStable(filtered, func(i, j int) bool {
+			return filtered[i].Latency > filtered[j].Latency
+		})
+	default:
+		sort.SliceStable(filtered, func(i, j int) bool {
+			left, right := filtered[i].Latency, filtered[j].Latency
+			if left <= 0 {
+				left = int(^uint(0) >> 1)
+			}
+			if right <= 0 {
+				right = int(^uint(0) >> 1)
+			}
+			return left < right
+		})
+	}
+
+	pageSize := queryInt(values, "page_size", 50)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	page := queryInt(values, "page", 1)
+	total := len(filtered)
+	pages := 0
+	if total > 0 {
+		pages = (total + pageSize - 1) / pageSize
+		if page > pages {
+			page = pages
+		}
+	}
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+
+	countries := make([]string, 0, len(countrySet))
+	for code := range countrySet {
+		if code != "" {
+			countries = append(countries, code)
+		}
+	}
+	sort.Strings(countries)
+
+	return proxyPage{
+		Items: filtered[start:end], Total: total, Page: page,
+		PageSize: pageSize, Pages: pages, Countries: countries,
+	}
 }
 
 func (s *Server) apiDeleteProxy(w http.ResponseWriter, r *http.Request) {
