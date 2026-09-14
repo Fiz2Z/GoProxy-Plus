@@ -67,6 +67,72 @@ func TestFailureLifecycleDisablesThenExpires(t *testing.T) {
 	}
 }
 
+func TestWeightedRandomUsesHighQualityTierFirst(t *testing.T) {
+	proxies := []Proxy{
+		{Address: "slow", QualityGrade: "C"},
+		{Address: "fallback", QualityGrade: "B"},
+		{Address: "fast", QualityGrade: "A"},
+	}
+	for i := 0; i < 100; i++ {
+		if got := weightedRandomProxy(proxies); got.Address != "fast" {
+			t.Fatalf("selected lower tier while A grade was available: %+v", got)
+		}
+	}
+}
+
+func TestTransportSuccessDoesNotEraseApplicationFailures(t *testing.T) {
+	store, err := New(filepath.Join(t.TempDir(), "proxy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.db.Close()
+	const address = "2.3.4.5:8080"
+	if err := store.AddProxy(address, "http"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := store.RecordProxyUse(address, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordApplicationResult(address, false, false, 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var status string
+	var failures int
+	if err := store.db.QueryRow(`SELECT status, fail_count FROM proxies WHERE address=?`, address).Scan(&status, &failures); err != nil {
+		t.Fatal(err)
+	}
+	if status != "disabled" || failures != 3 {
+		t.Fatalf("application failures were erased by transport success: status=%s failures=%d", status, failures)
+	}
+}
+
+func TestRiskFeedbackDoesNotDisableOtherwiseHealthyProxy(t *testing.T) {
+	store, err := New(filepath.Join(t.TempDir(), "proxy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.db.Close()
+	const address = "3.4.5.6:8080"
+	if err := store.AddProxy(address, "http"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := store.RecordApplicationResult(address, false, true, 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var status string
+	var failures int
+	if err := store.db.QueryRow(`SELECT status, fail_count FROM proxies WHERE address=?`, address).Scan(&status, &failures); err != nil {
+		t.Fatal(err)
+	}
+	if status != "active" || failures != 0 {
+		t.Fatalf("risk feedback changed durable health: status=%s failures=%d", status, failures)
+	}
+}
+
 func TestMissingExitInfoIsQuarantinedNotDeleted(t *testing.T) {
 	store, err := New(filepath.Join(t.TempDir(), "proxy.db"))
 	if err != nil {

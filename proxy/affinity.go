@@ -65,7 +65,8 @@ type ApplicationProxyStatus struct {
 // cooldowns. State is deliberately in-memory: a process restart clears leases
 // and lets the normal pool validator remain the source of durable truth.
 type AffinityManager struct {
-	mu sync.Mutex
+	mu      sync.Mutex
+	storage *storage.Storage
 
 	leaseTTL        time.Duration
 	failureCooldown time.Duration
@@ -105,8 +106,8 @@ func durationFromEnv(name string, fallback, minimum time.Duration) time.Duration
 	return value
 }
 
-func NewAffinityManager() *AffinityManager {
-	return &AffinityManager{
+func NewAffinityManager(stores ...*storage.Storage) *AffinityManager {
+	manager := &AffinityManager{
 		leaseTTL:        durationFromEnv("APP_LEASE_TTL_SECONDS", 3*time.Minute, 30*time.Second),
 		failureCooldown: durationFromEnv("APP_FAILURE_COOLDOWN_SECONDS", 5*time.Minute, 30*time.Second),
 		riskCooldown:    durationFromEnv("APP_RISK_COOLDOWN_SECONDS", 30*time.Minute, time.Minute),
@@ -117,6 +118,10 @@ func NewAffinityManager() *AffinityManager {
 		cooldowns:       make(map[string]affinityCooldown),
 		riskStrikes:     make(map[string]int),
 	}
+	if len(stores) > 0 {
+		manager.storage = stores[0]
+	}
+	return manager
 }
 
 func normalizeAffinityValue(value, fallback string) string {
@@ -367,6 +372,13 @@ func (m *AffinityManager) Feedback(session string, success bool, reason string) 
 	if !ok {
 		delete(m.lastBySession, session)
 		return false
+	}
+	if m.storage != nil {
+		if err := m.storage.RecordApplicationResult(lease.Proxy.Address, success, risk, proxyDisableThreshold()); err != nil {
+			// Feedback must remain best-effort. The in-memory cooldown still
+			// protects the current process if SQLite is temporarily busy.
+			fmt.Printf("[application] persist feedback for %s failed: %v\n", lease.Proxy.Address, err)
+		}
 	}
 	if success {
 		lease.ExpiresAt = now.Add(m.leaseTTL)

@@ -484,6 +484,30 @@ func proxySelectionWeight(p Proxy) int {
 }
 
 func weightedRandomProxy(proxies []Proxy) Proxy {
+	// Application traffic should not sample a known B/C node while a verified
+	// S/A node is available. Lower grades remain an emergency fallback so the
+	// service can still operate when the high-quality tier is exhausted or in
+	// destination-specific cooldown.
+	preferred := make([]Proxy, 0, len(proxies))
+	for _, p := range proxies {
+		grade := strings.ToUpper(p.QualityGrade)
+		if grade == "S" || grade == "A" {
+			preferred = append(preferred, p)
+		}
+	}
+	if len(preferred) > 0 {
+		proxies = preferred
+	} else {
+		fallback := make([]Proxy, 0, len(proxies))
+		for _, p := range proxies {
+			if strings.EqualFold(p.QualityGrade, "B") {
+				fallback = append(fallback, p)
+			}
+		}
+		if len(fallback) > 0 {
+			proxies = fallback
+		}
+	}
 	total := 0
 	for _, p := range proxies {
 		total += proxySelectionWeight(p)
@@ -634,13 +658,31 @@ func (s *Storage) RecordProxyUse(address string, success bool) error {
 	if success {
 		_, err := s.db.Exec(
 			`UPDATE proxies SET use_count = use_count + 1, success_count = success_count + 1, 
-			 fail_count = 0, failure_since = NULL, status = 'active',
 			 last_used = CURRENT_TIMESTAMP WHERE address = ?`,
 			address,
 		)
 		return err
 	}
 	return s.MarkProxyFailure(address, true, 3)
+}
+
+// RecordApplicationResult closes the gap between a successfully established
+// CONNECT/SOCKS tunnel and the result observed by the application. Transport
+// success alone must not clear a previous TLS or upstream failure: otherwise a
+// broken MITM proxy is reset to healthy immediately before every failed TLS
+// handshake and can never reach the disable threshold.
+//
+// Risk responses are deliberately kept out of the durable failure lifecycle.
+// They are handled by the application-specific exponential cooldown because a
+// proxy blocked by one destination can still be a healthy general-purpose node.
+func (s *Storage) RecordApplicationResult(address string, success, risk bool, disableAfter int) error {
+	if success {
+		return s.ResetFail(address)
+	}
+	if risk {
+		return nil
+	}
+	return s.MarkProxyFailure(address, false, disableAfter)
 }
 
 // MarkProxyFailure advances a consecutive-failure lifecycle without deleting

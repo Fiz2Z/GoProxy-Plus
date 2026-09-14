@@ -134,24 +134,24 @@ func (s *Server) selectProxyFromStorage(tried []string, lowestLatency bool, sour
 		var p *storage.Proxy
 		var err error
 		if lowestLatency {
-			p, err = s.storage.GetLowestLatencyExcludeFiltered(tried, preferSource)
+			p, err = s.storage.GetLowestLatencyByProtocolExcludeFiltered("http", tried, preferSource)
 		} else {
-			p, err = s.storage.GetRandomExcludeFiltered(tried, preferSource)
+			p, err = s.storage.GetRandomByProtocolExcludeFiltered("http", tried, preferSource)
 		}
 		if err == nil {
 			return p, nil
 		}
 		// fallback 到全部
 		if lowestLatency {
-			return s.storage.GetLowestLatencyExcludeFiltered(tried, "")
+			return s.storage.GetLowestLatencyByProtocolExcludeFiltered("http", tried, "")
 		}
-		return s.storage.GetRandomExcludeFiltered(tried, "")
+		return s.storage.GetRandomByProtocolExcludeFiltered("http", tried, "")
 	}
 
 	if lowestLatency {
-		return s.storage.GetLowestLatencyExcludeFiltered(tried, sourceFilter)
+		return s.storage.GetLowestLatencyByProtocolExcludeFiltered("http", tried, sourceFilter)
 	}
-	return s.storage.GetRandomExcludeFiltered(tried, sourceFilter)
+	return s.storage.GetRandomByProtocolExcludeFiltered("http", tried, sourceFilter)
 }
 
 func proxyDisableThreshold() int {

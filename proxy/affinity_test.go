@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
+	"goproxy/config"
 	"goproxy/storage"
 )
 
@@ -122,5 +124,32 @@ func TestFeedbackWithoutLiveLeaseStillCountsCollectionResult(t *testing.T) {
 	status := m.Status()
 	if status.CollectionRequests != 1 || status.CollectionFailures != 1 {
 		t.Fatalf("unmatched feedback was not counted: %+v", status)
+	}
+}
+
+func TestHTTPServingPortNeverSelectsSOCKSUpstream(t *testing.T) {
+	store, err := storage.New(filepath.Join(t.TempDir(), "proxy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.AddProxy("1.1.1.1:1080", "socks5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddProxy("2.2.2.2:8080", "http"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.CustomPriority = false
+	cfg.CustomFreePriority = false
+	server := New(store, cfg, "random", ":7777")
+	for i := 0; i < 20; i++ {
+		selected, err := server.selectProxyFromStorage(nil, false, "", cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if selected.Protocol != "http" {
+			t.Fatalf("HTTP port selected %s upstream: %+v", selected.Protocol, selected)
+		}
 	}
 }

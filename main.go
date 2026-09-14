@@ -55,7 +55,7 @@ func main() {
 	fetch := fetcher.New(cfg.HTTPSourceURL, cfg.SOCKS5SourceURL, sourceMgr)
 	validate := validator.New(cfg.ValidateConcurrency, cfg.ValidateTimeout, cfg.ValidateURL)
 	poolMgr := pool.NewManager(store, cfg)
-	applicationProxy := proxy.NewAffinityManager()
+	applicationProxy := proxy.NewAffinityManager(store)
 	healthChecker := checker.NewHealthChecker(store, validate, cfg, poolMgr)
 	opt := optimizer.NewOptimizer(store, fetch, validate, poolMgr, cfg)
 
